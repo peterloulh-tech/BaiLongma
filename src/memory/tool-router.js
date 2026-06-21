@@ -50,6 +50,7 @@ const REVIEW_TOOLS      = ['review_work']
 const WEB_TOOLS         = ['web_search', 'fetch_url', 'browser_read']
 const FILESYSTEM_TOOLS  = ['read_file', 'write_file', 'delete_file', 'list_dir', 'make_dir']
 const EXEC_TOOLS        = ['exec_command', 'kill_process', 'list_processes']
+const SOFTWARE_INSTALL_TOOLS = ['install_software']
 const MEDIA_TOOLS       = ['media_mode', 'music']
 const REMINDER_TOOLS    = ['manage_reminder']
 const PREFETCH_TOOLS    = ['manage_prefetch_task']
@@ -105,6 +106,16 @@ const EXEC_TRIGGERS = [
   'bash', 'terminal', 'console',
 ]
 
+const SOFTWARE_INSTALL_TRIGGERS = [
+  '安装软件', '装软件', '安装应用', '装应用', '安装程序', '装程序',
+  '安装 ', '安装chrome', '安装vscode', '安装vs code', '安装ffmpeg',
+  '帮我安装', '帮我装', '下载并安装', '下载安装', '装一下', '装个',
+  'brew install', 'homebrew install', 'homebrew cask', 'cask',
+  'dmg', '.dmg', 'pkg', '.pkg', '.app', 'applications',
+  'install app', 'install software', 'install chrome', 'install vscode',
+  'install vs code', 'download and install',
+]
+
 const WEB_TRIGGERS = [
   '搜', '搜索', '查一下', '查查', '百度', '谷歌', '上网', '在线', '网页',
   '网址', '链接', '浏览', '打开网页', '看看网上', '抓一下',
@@ -157,7 +168,7 @@ const FOCUS_BANNER_TRIGGERS = [
 ]
 
 const ADMIN_TRIGGERS = [
-  '装一下', '安装', '装个', '卸载', '装好', '装上', '工具市场', '插件',
+  '安装工具', '装一下这个工具', '装个工具', '卸载工具', '卸载那个旧的', '工具市场', '插件',
   '自写工具', '自己写工具', '工具工厂', '工具审核', '生成工具', '注册工具',
   '安全', '沙箱', '权限', '微信', '绑定', '连接', '配对',
   '位置', '在哪', '改名字', '改名', '叫你', '叫我', '管理应用', 'app 列表',
@@ -210,6 +221,7 @@ const REVIEW_TRIGGERS = [
 export const TOOL_GROUPS = [
   { triggers: FILESYSTEM_TRIGGERS,   tools: FILESYSTEM_TOOLS },
   { triggers: EXEC_TRIGGERS,         tools: EXEC_TOOLS },
+  { triggers: SOFTWARE_INSTALL_TRIGGERS, tools: SOFTWARE_INSTALL_TOOLS },
   { triggers: WEB_TRIGGERS,          tools: WEB_TOOLS },
   { triggers: MEDIA_TRIGGERS,        tools: MEDIA_TOOLS },
   { triggers: REMINDER_TRIGGERS,     tools: REMINDER_TOOLS },
@@ -334,6 +346,11 @@ export function selectTools(ctx = {}) {
   }
   if (hits(body, EXEC_TRIGGERS)) {
     for (const t of EXEC_TOOLS) out.add(t)
+  }
+  if (hits(body, SOFTWARE_INSTALL_TRIGGERS)) {
+    for (const t of SOFTWARE_INSTALL_TOOLS) out.add(t)
+    // 安装请求通常需要查来源/下载页，给 web 工具作为辅助，但实际安装走 install_software。
+    for (const t of WEB_TOOLS) out.add(t)
   }
   if (hits(body, WEB_TRIGGERS) || isTick) {
     for (const t of WEB_TOOLS) out.add(t)

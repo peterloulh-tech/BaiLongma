@@ -27,6 +27,7 @@ import { execDowngradeMemory, execMergeMemories, execProbeMemory, execRecallMemo
 import { execManageReminder } from './tools/reminders.js'
 import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
 import { execManageRule } from './tools/rules.js'
+import { execInstallSoftware } from './tools/software-install.js'
 import { runWorkReview } from '../review/reviewer.js'
 import { sanitizeUserVisibleText } from '../runtime/markers.js'
 export { calculateNextDueAt } from './tools/reminders.js'
@@ -253,6 +254,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return await execManageToolFactory(args)
       case 'find_tool':
         return execFindTool(args)
+      case 'install_software':
+        return await execInstallSoftware(args, context)
       case 'connect_wechat':
         return execConnectWechat()
       case 'set_security':

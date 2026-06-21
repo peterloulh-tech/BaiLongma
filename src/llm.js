@@ -612,6 +612,7 @@ const REPORT_CHANNEL_TOOLS = new Set(['send_message', 'express'])
 const SLOW_ACK_TOOLS = new Set([
   'generate_video', 'generate_image', 'generate_music', 'generate_lyrics',
   'web_search', 'fetch_url', 'browser_read', 'deep_research', 'exec_command',
+  'install_software',
 ])
 function isSlowAckTool(name, args) {
   if (name === 'music') return String(args?.action || '').trim() === 'download'  // 仅下载慢；search/list 秒回
@@ -630,6 +631,7 @@ function slowAckText(name, args) {
     return q ? `我查一下「${q.length > 30 ? q.slice(0, 30) + '…' : q}」～` : '我查一下～'
   }
   if (name === 'exec_command') return '我跑一下～'
+  if (name === 'install_software') return '我先按安全流程处理安装～'
   return '收到，我处理一下～'
 }
 

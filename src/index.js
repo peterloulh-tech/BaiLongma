@@ -14,12 +14,12 @@ import { runMemoryRefreshLoop } from './memory/refresh-loop.js'
 import { startConsolidationLoop } from './memory/consolidation-loop.js'
 import { runRuntimeInjector } from './context/runtime-injector.js'
 import { selectContextSections } from './context/section-gate.js'
-import { getDB, getConfig, setConfig, getKnownEntities, getOrInitBirthTime, insertConversation, insertMemory, getRecentConversationPartners, getDueReminders, markReminderFired, advanceReminderDueAt, getNextPendingReminder, getMemoryCount, getRecentConversationTimeline, loadFocusStack, loadThreadState, saveThreadState, setCurrentFocusTopic, setCurrentThreadId, updateUserMessageFocusTopic, reassignConversationsThread, insertActionLog } from './db.js'
-import { calculateNextDueAt, autoSpeakForVoiceReply, detectOpenFollowupQuestion } from './capabilities/executor.js'
+import { getDB, getConfig, setConfig, getKnownEntities, getOrInitBirthTime, insertMemory, getRecentConversationPartners, getDueReminders, markReminderFired, advanceReminderDueAt, getNextPendingReminder, getMemoryCount, getRecentConversationTimeline, loadFocusStack, loadThreadState, saveThreadState, setCurrentFocusTopic, setCurrentThreadId, updateUserMessageFocusTopic, reassignConversationsThread } from './db.js'
+import { calculateNextDueAt, autoSpeakForVoiceReply } from './capabilities/executor.js'
 import { popMessage, hasMessages, hasUserMessages, getQueueSnapshot, setInterruptCallback, requeueMessage, pushMessage } from './queue.js'
 import { startTUI } from './tui.js'
 import { startAPI } from './api.js'
-import { emitEvent, emitUICommand, addActiveUICard, hasACUIClient, setStickyEvent, clearStickyEvent } from './events.js'
+import { emitEvent, setStickyEvent, clearStickyEvent } from './events.js'
 import { formatTick, nowTimestamp, describeExistence } from './time.js'
 import { getAdaptiveTickInterval, getQuotaStatus, setRateLimited, isRateLimited, getTickInterval } from './quota.js'
 import { registerProvider } from './providers/registry.js'
@@ -30,7 +30,6 @@ import { seedSandboxOnce, seedMusicOnce, rescueDataFromInstallDir } from './path
 import { ensureSkillMemories } from './memory/seed-skills.js'
 import { loadInstalledTools } from './capabilities/marketplace/index.js'
 import { resumePendingVideoJobs, getAIVideoPanelState } from './capabilities/tools/media.js'
-import { dispatchSocialMessage } from './social/dispatch.js'
 import { startSocialConnectors } from './social/index.js'
 import { getWeatherCardProps, isWeatherQuery } from './weather.js'
 import { collectSystemInfo, getSystemInfoBlock, getBatteryBlock, getDesktopPath } from './system-info.js'
@@ -49,6 +48,16 @@ import { parseMarkers } from './runtime/markers.js'
 import { buildStrictEvaluationContext, filterStrictEvaluationTools, resolveStrictEvaluationMode } from './runtime/strict-evaluation.js'
 import { extractVerbatimPayload, findRecentVerbatimPayload, hasInlineVerbatimPayload, isVerbatimOutputRequest, isVerbatimSetup, isVerbatimStart } from './runtime/verbatim.js'
 import { refreshUserProfile } from './profile/infer.js'
+import { createAwakeningManager, STARTUP_SELF_CHECK_VERSION } from './awakening.js'
+import { createTaskManager, TASK_IDLE_TICK_LIMIT } from './task-manager.js'
+import {
+  deliverDirectReply,
+  deriveStackView,
+  formatQuickWeatherReply,
+  isVoiceChannel,
+  mountWeatherCard,
+  summarizeToolCall,
+} from './ui-bridge.js'
 
 // On first launch, copy sandbox seed files from the resource directory to the user data directory (Electron install)
 seedSandboxOnce()
@@ -100,6 +109,21 @@ await loadInstalledTools()
 const startupSkills = refreshSkills()
 console.log(`[skills] Loaded ${startupSkills.length} Agent Skill(s)`)
 
+const {
+  getAwakeningTicks,
+  decrementAwakeningTick,
+  advanceExplorationTask,
+  buildAwakeningExplorationDirections,
+  writeStartupSelfCheckState,
+  ensureStartupSelfCheckState,
+  buildStartupSelfCheckDirections,
+} = createAwakeningManager({
+  getConfig,
+  setConfig,
+  nowTimestamp,
+  buildDelegationAskDirections,
+})
+
 // AbortController for the current LLM call (used to interrupt the main loop)
 let currentAbortController = null
 let currentExecution = null
@@ -117,8 +141,6 @@ const PRIORITY = {
 }
 
 const L2_CONTEXT_HOURS = 24 * 7
-const STARTUP_SELF_CHECK_VERSION = 'v2'
-const STARTUP_SELF_CHECK_CONFIG_KEY = 'l2_startup_self_check'
 
 // Initialize database
 getDB()
@@ -128,57 +150,6 @@ if (getMemoryCount() === 0) {
 }
 const birthTime = getOrInitBirthTime()
 refreshUserProfile(PRIMARY_USER_ID)
-
-// Awakening phase: first 10 heartbeat ticks after initial activation run at a fixed 10s cadence
-const AWAKENING_CONFIG_KEY = 'awakening_ticks_remaining'
-function getAwakeningTicks() {
-  const raw = getConfig(AWAKENING_CONFIG_KEY)
-  if (raw === null || raw === undefined || raw === '') return 10
-  return Math.max(0, parseInt(raw, 10) || 0)
-}
-function decrementAwakeningTick() {
-  const current = getAwakeningTicks()
-  if (current > 0) setConfig(AWAKENING_CONFIG_KEY, String(current - 1))
-}
-
-// Awakening exploration tasks: after self-check completes, each autonomous heartbeat tick completes one in order
-const EXPLORATION_INDEX_KEY = 'awakening_exploration_index'
-// AwakeningCard call template — must be executed after completing each exploration step:
-// ui_show("AwakeningCard", { index: N, total: 3, title: "title", finding: "one-sentence finding", emoji: "emoji" })
-const AWAKENING_EXPLORATION_TASKS = [
-  // 1. Read existing memories
-  `Exploration (1/2): See what you already know.
-Go through the injected memories silently and take stock: who do you know, what do you know, are there any threads with no follow-up.
-[HARD RULE — DO NOT VIOLATE] During the awakening exploration phase the user has not started a conversation with you yet. Calling send_message to proactively open a topic — including any "casual mention" of memories you uncovered — is forbidden. Record findings only in the AwakeningCard below; do not turn them into outbound messages.
-When done, call ui_show("AwakeningCard", { index:1, total:2, title:"Reading memories", finding:"(one sentence: the most notable lead in the memory store, or 'memory store ready')", emoji:"🧠" }).
-If later the user opens a conversation and the topic is relevant, you may bring the finding in then — not before.`,
-
-  // 2. Surface an unfinished thread
-  `Exploration (2/2): Find a forgotten thread.
-Look through memories silently — what did the user mention before but never bring up again? A plan, an idea, something they said they wanted to do but never did?
-[HARD RULE — DO NOT VIOLATE] Same as Task 1: send_message is forbidden during awakening exploration. Do not "casually bring it up". Do not ask "do you need me to move this forward?". Do not draft an opening line to the user. The thread, if found, lives only in the AwakeningCard finding field; it waits for the user to start the conversation.
-When done, call ui_show("AwakeningCard", { index:2, total:2, title:"Unfinished thread", finding:"(one sentence describing the forgotten thread, or 'no open threads found')", emoji:"🔍" }).`,
-]
-
-function getExplorationIndex() {
-  const raw = getConfig(EXPLORATION_INDEX_KEY)
-  if (raw === null || raw === undefined || raw === '') return 0
-  return Math.max(0, parseInt(raw, 10) || 0)
-}
-function advanceExplorationTask() {
-  const current = getExplorationIndex()
-  if (current < AWAKENING_EXPLORATION_TASKS.length) {
-    setConfig(EXPLORATION_INDEX_KEY, String(current + 1))
-  }
-}
-function buildAwakeningExplorationDirections() {
-  if (getAwakeningTicks() <= 0) return null  // 觉醒期已结束，不再注入探索任务
-  const index = getExplorationIndex()
-  if (index < AWAKENING_EXPLORATION_TASKS.length) return AWAKENING_EXPLORATION_TASKS[index]
-  // All exploration tasks done — check whether to ask about agent delegation permissions
-  const delegationAsk = buildDelegationAskDirections()
-  return delegationAsk || null
-}
 
 // Restore persisted task from database (survives restarts)
 const persistedTask = getConfig('current_task')
@@ -245,19 +216,6 @@ function initThreadState() {
   return { threads: [], foregroundId: null, commitments: [] }
 }
 
-// brain-ui 兼容：把线索状态派生成"栈视图"（后台按活跃时间升序 + 前台垫底=栈顶），
-// focus_frame 事件 payload 形状不变，专注帧观察面板零改动。
-function deriveStackView(state) {
-  const ts = ensureThreadState(state)
-  const background = ts.threads
-    .filter(t => t.id !== ts.foregroundId)
-    .sort((a, b) => Date.parse(a.lastEventAt || 0) - Date.parse(b.lastEventAt || 0))
-  const fg = getForegroundThread(state)
-  return fg ? [...background, fg] : background
-}
-
-const TASK_IDLE_TICK_LIMIT = 5  // auto-clear task after N consecutive task ticks with no tool calls
-
 // 识别器去抖调度：批量 recognizer 完成后照常广播 memories_written（按批，count 为该批写入总数）
 configureRecognizerScheduler({
   onResult: (memories) => {
@@ -268,195 +226,28 @@ configureRecognizerScheduler({
   },
 })
 
-function summarizeToolCall(t = {}) {
-  const args = t.args || {}
-  const status = t.ok === false ? ' failed' : ''
-  if (t.name === 'send_message') return `send_message -> ${args.target_id || args.to || 'unknown'}${status}`
-  if (t.name === 'fetch_url') return `fetch_url(${String(args.url || '').slice(0, 60)})${status}`
-  if (t.name === 'write_file') return `write_file(${args.path || args.filename || args.file_path || '?'})${status}`
-  if (t.name === 'read_file') {
-    const pathArg = args.path || args.filename || args.file_path || '?'
-    const rangeParts = []
-    if (args.start_line !== undefined) rangeParts.push(`start=${args.start_line}`)
-    if (args.end_line !== undefined) rangeParts.push(`end=${args.end_line}`)
-    if (args.max_lines !== undefined) rangeParts.push(`max=${args.max_lines}`)
-    const range = rangeParts.length ? ` ${rangeParts.join(' ')}` : ''
-    return `read_file(${pathArg}${range})${status}`
-  }
-  if (t.name === 'exec_command') return `exec_command(${String(args.command || '').slice(0, 80)})${status}`
-  return `${t.name || 'tool'}${status}`
-}
-
-// 线索模型：task 生命周期 ↔ 承诺生命周期。
-// set_task = "好的我去做"的工程化时刻（单 Agent 版 spawn）：给前台线索挂承诺，钉住温度；
-// 任务完成/取消 = 交差：关承诺，线索按 lastEventAt 自然降温——没有任何突变动作。
-function openTaskCommitment(description) {
-  try {
-    const commitment = openCommitment(state, { text: String(description || ''), tick: state.tickCounter || 0 })
-    // task ↔ 承诺绑定：task 槽是单例（set_task B 会覆盖 A），但承诺是多例的——
-    // 收尾时必须按 id 精确关"当前 task 的承诺"，否则 closeCommitment 默认关最老的
-    // open 承诺，任务 B 完成会误关任务 A 的承诺（被覆盖的 A 承诺保持 open：
-    // 用户没取消 A，承诺仍未兑现，线索保持 warm 等用户回来问）。
-    state.taskCommitmentId = commitment?.id || null
-    // 跨重启持久化：task 从 config 恢复、承诺从 db 恢复，绑定关系也得跟着活下来，
-    // 否则重启后收尾退化回"关最老的 open 承诺"。
-    setConfig('current_task_commitment_id', commitment?.id || '')
-    saveThreadState(state.threadState)
-  } catch (e) {
-    console.log('[threads] openCommitment failed:', e?.message || e)
-  }
-}
-function closeTaskCommitment(status = 'done') {
-  try {
-    const boundId = state.taskCommitmentId || getConfig('current_task_commitment_id') || null
-    const closed = closeCommitment(state, {
-      commitmentId: boundId,
-      status,
-    })
-    state.taskCommitmentId = null
-    setConfig('current_task_commitment_id', '')
-    if (closed) saveThreadState(state.threadState)
-  } catch (e) {
-    console.log('[threads] closeCommitment failed:', e?.message || e)
-  }
-}
-
-function autoCompleteTask(reason) {
-  const clearedTask = state.task
-  state.task = null
-  state.lastTaskRefreshTick = -10
-  state.taskSteps = []
-  state.taskIdleTickCount = 0
-  setConfig('current_task', '')
-  setConfig('current_task_steps', '[]')
-  closeTaskCommitment('done')
-  console.log(`[task] Auto-cleared (${reason}): ${clearedTask}`)
-  emitEvent('task_cleared', { task: clearedTask, summary: `Auto-cleared: ${reason}` })
-  if (clearedTask) {
-    insertMemory({
-      event_type: 'task_complete',
-      content: `Task auto-cleared: ${clearedTask.slice(0, 60)}`,
-      detail: `Reason: ${reason}`,
-      entities: [], concepts: [], tags: ['task_complete'],
-      timestamp: nowTimestamp(),
-    })
-  }
-}
+const {
+  autoCompleteTask,
+  setTask,
+  completeTask,
+  updateTaskStep,
+  setTaskFromMarker,
+  clearTaskFromMarker,
+} = createTaskManager({
+  state,
+  setConfig,
+  getConfig,
+  saveThreadState,
+  openCommitment,
+  closeCommitment,
+  emitEvent,
+  insertMemory,
+  nowTimestamp,
+})
 
 function newSessionRef() {
   state.sessionCounter++
   return `session_${Date.now()}_${state.sessionCounter}`
-}
-
-function readStartupSelfCheckState() {
-  try {
-    const raw = getConfig(STARTUP_SELF_CHECK_CONFIG_KEY)
-    if (!raw) return null
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
-}
-
-function writeStartupSelfCheckState(value) {
-  setConfig(STARTUP_SELF_CHECK_CONFIG_KEY, JSON.stringify(value))
-}
-
-function ensureStartupSelfCheckState() {
-  const current = readStartupSelfCheckState()
-  if (current?.version === STARTUP_SELF_CHECK_VERSION && current.status === 'completed') {
-    state.startupSelfCheck = { ...current, active: false }
-    return state.startupSelfCheck
-  }
-
-  const now = nowTimestamp()
-  const next = {
-    version: STARTUP_SELF_CHECK_VERSION,
-    status: 'running',
-    started_at: current?.started_at || now,
-    updated_at: now,
-    attempts: Number(current?.attempts || 0) + (current?.status === 'running' ? 0 : 1),
-    results: current?.version === STARTUP_SELF_CHECK_VERSION && current?.results ? current.results : {},
-    active: true,
-  }
-  writeStartupSelfCheckState(next)
-  state.startupSelfCheck = next
-  return next
-}
-
-function buildStartupSelfCheckDirections(checkState) {
-  if (!checkState?.active) return ''
-  return [
-    `This is the L2 startup self-check flow (${STARTUP_SELF_CHECK_VERSION}). It runs once; when finished you must call complete_startup_self_check to record the results — it will not run again.`,
-    `[HARD RULE — DO NOT VIOLATE] During self-check, calling send_message is strictly forbidden. No text output of any kind (including "checking…", "self-check complete", or any other text). All status must be expressed through speak (voice) and ui_show (cards). The text channel must remain completely silent; any text output counts as self-check failure.`,
-    `Complete the following 3 checks in order. Before each one, you must simultaneously play a Chinese voice announcement and show a progress card. After the check completes, close the card before moving to the next:`,
-    `1. Call speak text="正在检查文件读写能力"; call ui_show("SelfCheckStepCard", {step:1, total:3, name:"文件读写", icon:"📁"}) and save the returned id as step_card_id. Then: use write_file to write self_check.txt in the sandbox root (content = current timestamp), then read_file it back to verify consistency. Record the result and call ui_hide(step_card_id).`,
-    `2. Call speak text="正在检查热点面板"; call ui_show("SelfCheckStepCard", {step:2, total:3, name:"热点面板", icon:"🌐"}) and save the returned id as step_card_id. Then: hotspot_mode action=show; confirm it returns ok, then hotspot_mode action=hide. Record the result and call ui_hide(step_card_id).`,
-    `3. Call speak text="正在检查视频模式"; call ui_show("SelfCheckStepCard", {step:3, total:3, name:"视频模式", icon:"🎬"}) and save the returned id as step_card_id. Then: web_search for "bilibili Iron Man JARVIS" ONCE — this is only a self-check, so take the FIRST BV number that appears in the results and stop immediately; do NOT keep searching for more videos or compare options, one valid BV id is enough. media_mode mode=video action=show url=https://www.bilibili.com/video/<BV> autoplay=true; wait ~5 seconds; media_mode mode=video action=hide. Record the result and call ui_hide(step_card_id).`,
-    `Result values: use ok, degraded, error, or skipped_* for each item. Continue to the next item even if one fails.`,
-    `[FINAL TWO STEPS — REQUIRED]\n(a) Call ui_show to display SelfCheckCard with props: { results: [{name:"文件读写",status:"ok/error",...},{name:"热点面板",...},{name:"视频模式",...}], overall:"ok/degraded/error" }. Infer overall from actual results: all ok → ok; any skipped → degraded; any error → error.\n(b) Call complete_startup_self_check with a summary (one sentence) and the results object.`,
-  ].join('\n')
-}
-
-// Fallback 投递：当模型未按协议调 send_message 时由主循环代为投递。
-// 用 msg 自带的 externalPartyId + channel 路由（用户从哪儿发，就回到哪儿），并写入 conversations 表。
-//
-// 同步写一条 action_logs（tool='send_message', source='fallback'），保证 jarvis 在
-// action_log 里能完整看到自己的所有真实输出——self-snapshot 的身份锚才有据可依，
-// 不会把 fallback 投递误判成"幽灵回复（看似是你说过但 action_log 没记录）"。
-function deliverFallbackReply(msg, content, timestamp) {
-  const channel = msg.channel || ''
-  const externalPartyId = msg.externalPartyId || ''
-  emitEvent('message', {
-    from: 'consciousness',
-    to: msg.fromId,
-    content,
-    timestamp,
-    channel,
-    external_party_id: externalPartyId,
-  })
-  if (externalPartyId) {
-    dispatchSocialMessage(externalPartyId, content).catch(err => console.warn('[social] fallback send failed:', err.message))
-  }
-  insertConversation({
-    role: 'jarvis',
-    from_id: 'jarvis',
-    to_id: msg.fromId,
-    content,
-    timestamp,
-    channel,
-    external_party_id: externalPartyId,
-    // P0-2：fallback 投递的 reply 同样检测末尾是否是 follow-up 悬念
-    open_question: detectOpenFollowupQuestion(content) ? 1 : 0,
-  })
-  // 同步登记 action_log，让 self-snapshot 能用 action_log 作为身份锚的真值源。
-  // tool 仍为 send_message，但 source 标 'fallback' 以便区分主动调用与协议兜底。
-  try {
-    insertActionLog({
-      timestamp,
-      tool: 'send_message',
-      summary: `send_message -> ${msg.fromId} (fallback)`,
-      detail: String(content).slice(0, 280),
-      status: 'ok',
-      risk: 'medium',
-      args: { target_id: msg.fromId, content, channel },
-      resultPreview: `消息已发送至 ${msg.fromId}${channel ? `（${channel}）` : ''} [fallback]`,
-      durationMs: 0,
-      source: 'fallback',
-    })
-  } catch (e) {
-    console.warn('[fallback] insertActionLog failed:', e?.message || e)
-  }
-}
-
-function formatQuickWeatherReply(cardProps) {
-  if (!cardProps) return ''
-  const city = cardProps.city || '当地'
-  const temp = Number.isFinite(cardProps.temp) ? `${Math.round(cardProps.temp)}度` : ''
-  const feel = Number.isFinite(cardProps.feel) ? `体感${Math.round(cardProps.feel)}` : ''
-  const condition = cardProps.condition || cardProps.desc || ''
-  const parts = [temp, feel, condition].filter(Boolean)
-  return parts.length ? `${city}现在${parts.join('，')}。` : ''
 }
 
 async function tryHandleDirectWeatherTurn(input, msg, { finishTurn } = {}) {
@@ -481,24 +272,12 @@ async function tryHandleDirectWeatherTurn(input, msg, { finishTurn } = {}) {
   setCurrentThreadId('')  // 天气是一次性叶子，不归属任何线索
   try { updateUserMessageFocusTopic(msg.fromId, msg.timestamp, '天气') } catch {}
 
-  const timestamp = nowTimestamp()
-  if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(reply)
-  deliverFallbackReply(msg, reply, timestamp)
+  deliverDirectReply(msg, reply, finishTurn)
 
-  if (hasACUIClient()) {
-    const id = `weathercard-${Date.now()}`
-    emitUICommand({
-      op: 'mount',
-      id,
-      component: 'WeatherCard',
-      props: cardProps,
-      hint: { placement: 'notification', enter: 'flash-in', exit: 'flash-out' },
-    })
-    addActiveUICard(id, { component: 'WeatherCard' })
+  if (mountWeatherCard(cardProps)) {
     emitEvent('action', { tool: 'ui_show', summary: '推送卡片', detail: 'WeatherCard' })
   }
 
-  finishTurn?.(reply)
   return true
 }
 
@@ -541,62 +320,15 @@ function buildToolContextForProcess(msg, injection) {
     getTaskState: () => ({ task: state.task, steps: state.taskSteps }),
 
     onSetTask: (description, steps) => {
-      state.task = description
-      state.lastTaskRefreshTick = -10
-      state.taskSteps = steps.map(s => ({ text: s, status: 'pending', note: '' }))
-      setConfig('current_task', description)
-      setConfig('current_task_steps', JSON.stringify(state.taskSteps))
-      openTaskCommitment(description)
-      console.log(`[task] Started: ${description} (${steps.length} step(s))`)
-      emitEvent('task_set', { task: description, steps })
+      setTask(description, steps)
     },
 
     onCompleteTask: (summary) => {
-      const clearedTask = state.task
-      state.task = null
-      state.taskSteps = []
-      state.taskIdleTickCount = 0
-      setConfig('current_task', '')
-      setConfig('current_task_steps', '[]')
-      closeTaskCommitment('done')
-      console.log(`[task] Completed: ${clearedTask}`)
-      emitEvent('task_cleared', { task: clearedTask, summary })
-      if (clearedTask) {
-        insertMemory({
-          event_type: 'task_complete',
-          content: `Task completed: ${clearedTask.slice(0, 60)}${summary ? ' — ' + summary.slice(0, 60) : ''}`,
-          detail: 'Task marked complete via the complete_task tool',
-          entities: [], concepts: [], tags: ['task_complete'],
-          timestamp: nowTimestamp(),
-        })
-      }
+      completeTask(summary)
     },
 
     onUpdateTaskStep: (idx, status, note) => {
-      if (!state.taskSteps[idx]) return { error: `Step ${idx + 1} does not exist (${state.taskSteps.length} total)` }
-      state.taskSteps[idx] = { ...state.taskSteps[idx], status, note }
-      setConfig('current_task_steps', JSON.stringify(state.taskSteps))
-      const total = state.taskSteps.length
-      const done = state.taskSteps.filter(s => s.status === 'done').length
-      emitEvent('task_step_updated', { index: idx, status, note, progress: `${done}/${total}` })
-      // Option C: auto-clear task when all steps reach a terminal state
-      const terminal = ['done', 'failed', 'skipped']
-      const allTerminal = total > 0 && state.taskSteps.every(s => terminal.includes(s.status))
-      // 在 autoCompleteTask 清空 taskSteps 之前先算好"下一步/是否有失败"，回传给 executor，
-      // 让 update_task_step 的返回串把模型推进下一个 执行→观察→判断 微循环（ReAct 驱动）。
-      const nextIndex = state.taskSteps.findIndex(s => s.status === 'pending')
-      const nextStep = nextIndex >= 0 ? state.taskSteps[nextIndex].text : null
-      const anyFailed = state.taskSteps.some(s => s.status === 'failed')
-      if (allTerminal) autoCompleteTask('all steps complete')
-      return {
-        total,
-        done,
-        progress: `${done}/${total}`,
-        allTerminal,
-        nextIndex: nextIndex >= 0 ? nextIndex : null,
-        nextStep,
-        anyFailed,
-      }
+      return updateTaskStep(idx, status, note)
     },
 
     startupSelfCheck: state.startupSelfCheck,
@@ -658,10 +390,6 @@ function getProcessPriority(msg) {
   return typeof msg.priority === 'number' ? msg.priority : PRIORITY.background
 }
 
-function isVoiceChannel(channel) {
-  return channel === 'voice' || channel === '语音识别' || channel === 'FocusBanner'
-}
-
 // 语音轮里"明显要往外部/社交渠道发送"的意图——命中则保留 send_message 工具，
 // 否则语音轮默认撤掉它（回复走纯文本直投+TTS）。宁可漏判（少数情况下模型够不到外发通道，
 // 会如实说一声）也不误判（"发"字太宽泛不收，必须带明确渠道词或"发到/发给我"这类路由意图）。
@@ -672,13 +400,6 @@ const EXTERNAL_SEND_HINTS = [
 function voiceTurnNeedsSendMessage(text) {
   const b = String(text || '').toLowerCase()
   return EXTERNAL_SEND_HINTS.some(k => b.includes(k.toLowerCase()))
-}
-
-function deliverDirectReply(msg, content, finishTurn) {
-  const timestamp = nowTimestamp()
-  if (isVoiceChannel(msg?.channel)) autoSpeakForVoiceReply(content)
-  deliverFallbackReply(msg, content, timestamp)
-  finishTurn?.(content)
 }
 
 function tryHandleVerbatimTurn(input, msg, { finishTurn, conversationWindow = [] } = {}) {
@@ -883,7 +604,7 @@ async function runTurn(input, label, msg = null) {
       controller,
     })
 
-    if (isTick) ensureStartupSelfCheckState()
+    if (isTick) ensureStartupSelfCheckState(state)
 
     const earlyConversationWindow = msg ? getRecentConversationTimeline(12, 2, { includeAbsorbed: true }) : []
     if (!isTick && tryHandleVerbatimTurn(input, msg, { finishTurn, conversationWindow: earlyConversationWindow })) {
@@ -1077,11 +798,9 @@ async function runTurn(input, label, msg = null) {
     throwIfAborted(controller.signal)
 
     // When weather keywords are detected, auto-pop WeatherCard after 1 second
-    if (runtimeInjection.weatherCardProps && hasACUIClient()) {
+    if (runtimeInjection.weatherCardProps) {
       setTimeout(() => {
-        const id = `weathercard-${Date.now()}`
-        emitUICommand({ op: 'mount', id, component: 'WeatherCard', props: runtimeInjection.weatherCardProps, hint: { placement: 'notification', enter: 'flash-in', exit: 'flash-out' } })
-        addActiveUICard(id, { component: 'WeatherCard' })
+        mountWeatherCard(runtimeInjection.weatherCardProps)
       }, 1000)
     }
 
@@ -1515,30 +1234,10 @@ async function runTurn(input, label, msg = null) {
 
   // 6. Detect [SET_TASK: ...] / [CLEAR_TASK]
   if (markers.setTask !== null) {
-    state.task = markers.setTask.trim()
-    setConfig('current_task', state.task)
-    openTaskCommitment(state.task)
-    console.log(`[system] Task set: ${state.task}`)
-    emitEvent('task_set', { task: state.task })
+    setTaskFromMarker(markers.setTask)
   }
   if (markers.clearTask) {
-    const clearedTask = state.task
-    console.log(`[system] Task completed: ${clearedTask}`)
-    emitEvent('task_cleared', { task: clearedTask })
-    state.task = null
-    state.taskIdleTickCount = 0
-    setConfig('current_task', '')
-    closeTaskCommitment('done')
-    // Write a task_complete memory to prevent old task memories from making Jarvis think the task is still active
-    if (clearedTask) {
-      insertMemory({
-        event_type: 'task_complete',
-        content: `Task completed: ${clearedTask.slice(0, 60)}`,
-        detail: 'Task marked complete via [CLEAR_TASK] — no further execution',
-        entities: [], concepts: [], tags: ['task_complete'],
-        timestamp: nowTimestamp(),
-      })
-    }
+    clearTaskFromMarker()
   }
 
   // Update recent action log (keep last 5)
@@ -1780,7 +1479,7 @@ async function startConsciousnessLoop({ runImmediateTick = true } = {}) {
   })
 
   // Initialize self-check state before the first tick so the first tick can run self-check
-  ensureStartupSelfCheckState()
+  ensureStartupSelfCheckState(state)
   if (state.startupSelfCheck?.active) {
     console.log('[system] Startup self-check starting')
     const selfCheckPayload = { version: STARTUP_SELF_CHECK_VERSION }

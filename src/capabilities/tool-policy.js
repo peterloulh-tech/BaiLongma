@@ -34,6 +34,7 @@ const TOOL_RISK = {
   delegate_to_agent: 'high',
   grant_agent_delegation: 'high',
   install_tool: 'high',
+  install_software: 'high',
   uninstall_tool: 'medium',
   list_tools: 'low',
   manage_tool_factory: 'high',

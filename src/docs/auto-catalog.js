@@ -21,6 +21,7 @@ import { reviewSchemas } from '../capabilities/schemas/review.js'
 import { remindersSchemas } from '../capabilities/schemas/reminders.js'
 import { agentsSchemas } from '../capabilities/schemas/agents.js'
 import { systemSchemas } from '../capabilities/schemas/system.js'
+import { softwareSchemas } from '../capabilities/schemas/software.js'
 import { getProviderSummaries } from '../config.js'
 
 // 类别顺序即文档展示顺序；label 是给人看的中文分组名。
@@ -37,6 +38,7 @@ const TOOL_CATEGORIES = [
   { label: '提醒与预取', schemas: remindersSchemas },
   { label: 'Agent 委派 / 工具市场', schemas: agentsSchemas },
   { label: '系统与规则', schemas: systemSchemas },
+  { label: '软件安装', schemas: softwareSchemas },
 ]
 
 // 不对模型暴露（仅作执行器兼容别名），不进清单。

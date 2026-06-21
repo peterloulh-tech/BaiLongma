@@ -257,6 +257,43 @@ function hasNone(tools, names) {
     `13) admin keyword → admin group injected (got: ${tools.join(',')})`)
 }
 
+// ====== 13b) 软件安装触发 ======
+{
+  const tools = selectTools({
+    messageBody: '帮我安装 Chrome',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'install_software'),
+    `13b) install software intent → install_software injected (got: ${tools.join(',')})`)
+  assert(hasAll(tools, ['web_search', 'fetch_url']),
+    '13b) software install also has web tools for source checking')
+  assert(!has(tools, 'install_tool'),
+    '13b) ordinary app install should not pull marketplace install_tool')
+}
+
+{
+  const tools = selectTools({
+    messageBody: '用 Homebrew 安装 ffmpeg，brew install ffmpeg',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'install_software'),
+    `13c) brew install formula intent → install_software injected (got: ${tools.join(',')})`)
+}
+
+{
+  const tools = selectTools({
+    messageBody: '安装 VS Code',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'install_software'),
+    `13d) short "安装 VS Code" intent → install_software injected (got: ${tools.join(',')})`)
+  assert(!has(tools, 'install_tool'),
+    '13d) short software install should not pull marketplace install_tool')
+}
+
 // ====== 14) Person card 触发 ======
 {
   const tools = selectTools({
