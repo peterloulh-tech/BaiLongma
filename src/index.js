@@ -45,6 +45,7 @@ import { PRIMARY_USER_ID, formatPresenceForPrompt, normalizeChannel, isExternalC
 import { truncateToolResultForUI } from './runtime/tool-result-preview.js'
 import { buildLLMMessages } from './runtime/messages.js'
 import { parseMarkers } from './runtime/markers.js'
+import { logError, logWarn } from './runtime/error-logger.js'
 import { buildStrictEvaluationContext, filterStrictEvaluationTools, resolveStrictEvaluationMode } from './runtime/strict-evaluation.js'
 import { extractVerbatimPayload, findRecentVerbatimPayload, hasInlineVerbatimPayload, isVerbatimOutputRequest, isVerbatimSetup, isVerbatimStart } from './runtime/verbatim.js'
 import { refreshUserProfile } from './profile/infer.js'
@@ -154,10 +155,17 @@ refreshUserProfile(PRIMARY_USER_ID)
 // Restore persisted task from database (survives restarts)
 const persistedTask = getConfig('current_task')
 let persistedTaskSteps = []
+let persistedTaskStepsRaw = ''
 try {
-  const raw = getConfig('current_task_steps')
-  if (raw) persistedTaskSteps = JSON.parse(raw)
-} catch {}
+  persistedTaskStepsRaw = getConfig('current_task_steps')
+  if (persistedTaskStepsRaw) persistedTaskSteps = JSON.parse(persistedTaskStepsRaw)
+} catch (err) {
+  logWarn(err, {
+    scope: 'runtime.index',
+    operation: 'restore_task_steps',
+    metadata: { hasPersistedTaskSteps: !!persistedTaskStepsRaw },
+  })
+}
 if (persistedTask) {
   console.log(`[system] Resuming in-progress task: ${persistedTask.slice(0, 80)}`)
   if (persistedTaskSteps.length) console.log(`[system] Restoring task steps: ${persistedTaskSteps.length} step(s)`)
@@ -270,7 +278,15 @@ async function tryHandleDirectWeatherTurn(input, msg, { finishTurn } = {}) {
   //   这两行 focus_topic 永远是空，破坏话题边界标注。
   setCurrentFocusTopic('天气')
   setCurrentThreadId('')  // 天气是一次性叶子，不归属任何线索
-  try { updateUserMessageFocusTopic(msg.fromId, msg.timestamp, '天气') } catch {}
+  try {
+    updateUserMessageFocusTopic(msg.fromId, msg.timestamp, '天气')
+  } catch (err) {
+    logWarn(err, {
+      scope: 'runtime.index',
+      operation: 'stamp_weather_focus_topic',
+      metadata: { hasFromId: !!msg.fromId, hasTimestamp: !!msg.timestamp },
+    })
+  }
 
   deliverDirectReply(msg, reply, finishTurn)
 
@@ -674,7 +690,20 @@ async function runTurn(input, label, msg = null) {
       setCurrentFocusTopic(stampTopicStr)
       setCurrentThreadId(stampThread?.id || '')
       if (!isTick && msg?.fromId && msg?.timestamp && stampThread) {
-        try { updateUserMessageFocusTopic(msg.fromId, msg.timestamp, stampTopicStr, stampThread.id) } catch {}
+        try {
+          updateUserMessageFocusTopic(msg.fromId, msg.timestamp, stampTopicStr, stampThread.id)
+        } catch (err) {
+          logWarn(err, {
+            scope: 'runtime.index',
+            operation: 'stamp_user_message_thread',
+            metadata: {
+              hasFromId: !!msg.fromId,
+              hasTimestamp: !!msg.timestamp,
+              hasThreadId: !!stampThread.id,
+              topicCount: Array.isArray(stampThread.topic) ? stampThread.topic.length : 0,
+            },
+          })
+        }
       }
 
       if (threadResult?.event && threadResult.event !== 'noop') {
@@ -687,8 +716,20 @@ async function runTurn(input, label, msg = null) {
         ;(async () => {
           try {
             await summarizeThread(switched, { sessionRef, emitEvent, saveState })
-          } catch {}
-        })().catch(() => {})
+          } catch (err) {
+            logWarn(err, {
+              scope: 'runtime.index',
+              operation: 'summarize_switched_thread',
+              metadata: { threadId: switched?.id, sessionRef },
+            })
+          }
+        })().catch((err) => {
+          logWarn(err, {
+            scope: 'runtime.index',
+            operation: 'summarize_switched_thread_unhandled',
+            metadata: { threadId: switched?.id, sessionRef },
+          })
+        })
       }
 
       // 弱信号候选（与某后台线索重叠=1）→ 后台 LLM 仲裁。
@@ -709,7 +750,18 @@ async function runTurn(input, label, msg = null) {
             const ts = ensureThreadState(state)
             if (verdict.verdict === 'same' && ts.threads.includes(createdThread) && ts.threads.includes(candidate)) {
               mergeThreads(state, createdThread.id, candidate.id)
-              try { reassignConversationsThread(createdThread.id, candidate.id) } catch {}
+              try {
+                reassignConversationsThread(createdThread.id, candidate.id)
+              } catch (err) {
+                logWarn(err, {
+                  scope: 'runtime.index',
+                  operation: 'reassign_conversations_thread',
+                  metadata: {
+                    fromThreadId: createdThread.id,
+                    toThreadId: candidate.id,
+                  },
+                })
+              }
               ts.mergedAwayIds = [...(ts.mergedAwayIds || []), createdThread.id]
               setCurrentThreadId(candidate.id)
               saveState()
@@ -725,12 +777,34 @@ async function runTurn(input, label, msg = null) {
               threadState: state.threadState,
               event: 'refined',
             })
-          } catch {}
-        })().catch(() => {})
+          } catch (err) {
+            logWarn(err, {
+              scope: 'runtime.index',
+              operation: 'classify_thread_attribution',
+              metadata: {
+                createdThreadId: createdThread?.id,
+                candidateThreadId: candidate?.id,
+              },
+            })
+          }
+        })().catch((err) => {
+          logWarn(err, {
+            scope: 'runtime.index',
+            operation: 'classify_thread_attribution_unhandled',
+            metadata: {
+              createdThreadId: createdThread?.id,
+              candidateThreadId: candidate?.id,
+            },
+          })
+        })
       }
     } catch (e) {
       // 线索判断不应该影响主流程；任何异常吞掉、记录日志即可
-      console.log('[threads] attributeUserMessage failed:', e.message)
+      logWarn(e, {
+        scope: 'runtime.index',
+        operation: 'attribute_user_message_thread',
+        metadata: { isTick, hasMessage: !!msg },
+      })
     }
 
     const directions = [...(injection.directions || [])]
@@ -1035,7 +1109,17 @@ async function runTurn(input, label, msg = null) {
           console.log(`[memory refresh] Done — ${refreshResult.roundsRun} round(s), appended ${refreshResult.additionalMemories.length} memory/memories`)
         }
       } catch (e) {
-        if (e.name !== 'AbortError') console.log('[memory refresh] Error:', e.message)
+        if (e.name !== 'AbortError') {
+          logWarn(e, {
+            scope: 'runtime.index',
+            operation: 'memory_refresh_loop',
+            metadata: {
+              shouldRefreshL1,
+              shouldRefreshTick,
+              baseMemoryCount: injection.memories?.length || 0,
+            },
+          })
+        }
       }
     }
 
@@ -1253,7 +1337,13 @@ async function runTurn(input, label, msg = null) {
       if (touchCommitmentThread(state, { tick: state.tickCounter || 0 })) {
         saveThreadState(state.threadState)
       }
-    } catch {}
+    } catch (err) {
+      logWarn(err, {
+        scope: 'runtime.index',
+        operation: 'touch_commitment_thread',
+        metadata: { tick: state.tickCounter || 0, toolCallCount: toolCallLog.length },
+      })
+    }
   }
 
   // Option B: task idle detection — auto-clear after N consecutive ticks with no tool calls
@@ -1306,11 +1396,27 @@ async function runTurnWithWatchdog(input, label, msg) {
       const stuckLabel = currentExecution?.label || label
       const elapsedS = currentExecution ? Math.round((Date.now() - currentExecution.startedAt) / 1000) : null
       console.error(`[watchdog] runTurn 卡死 ${RUN_TURN_WATCHDOG_MS / 1000}s 未返回 (label=${stuckLabel}, elapsed=${elapsedS}s)，强制 abort`)
-      try { currentAbortController?.abort?.('watchdog timeout') } catch {}
+      try {
+        currentAbortController?.abort?.('watchdog timeout')
+      } catch (err) {
+        logWarn(err, {
+          scope: 'runtime.index',
+          operation: 'watchdog_abort',
+          metadata: { label: stuckLabel, elapsedS },
+        })
+      }
       // 立即清掉全局 execution 引用，避免后续 message 进来还 abort 同一个 controller
       currentAbortController = null
       currentExecution = null
-      try { emitEvent('error', { label: 'watchdog', error: `runTurn stuck > ${RUN_TURN_WATCHDOG_MS / 1000}s` }) } catch {}
+      try {
+        emitEvent('error', { label: 'watchdog', error: `runTurn stuck > ${RUN_TURN_WATCHDOG_MS / 1000}s` })
+      } catch (err) {
+        logWarn(err, {
+          scope: 'runtime.index',
+          operation: 'watchdog_emit_error',
+          metadata: { label: stuckLabel, elapsedS },
+        })
+      }
       const err = new Error('runTurn watchdog timeout')
       err.name = 'WatchdogTimeoutError'
       reject(err)
@@ -1348,7 +1454,10 @@ async function onTick() {
     if (err?.name === 'WatchdogTimeoutError') {
       lastTickAborted = true
     } else {
-      console.error('[onTick] runTurn 抛出未处理异常:', err?.stack || err?.message || err)
+      logError(err, {
+        scope: 'runtime.index',
+        operation: 'on_tick_run_turn',
+      })
     }
   } finally {
     processing = false

@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { paths } from './paths.js'
+import { logWarn } from './runtime/error-logger.js'
 
 const DB_PATH = paths.dbFile
 
@@ -2300,7 +2301,7 @@ export function deleteMusicTrack(id) {
 // saveFocusStack: 整栈原子替换。先 DELETE 再 INSERT，全部包在 transaction 里。
 //   focus.js 只在内存里改 state.focusStack，所以 index.js 在每次 updateFocusFrame
 //   返回非 noop 时主动调；focus-compress.js 也通过 onConclusionAttached 回调触发。
-//   写库失败 console.warn 后吞掉——专注栈丢一次远比阻塞主对话轻。
+//   写库失败记录结构化 warn 后吞掉——专注栈丢一次远比阻塞主对话轻。
 const FOCUS_STACK_RESTORE_TTL_MS = 24 * 60 * 60 * 1000
 
 export function loadFocusStack() {
@@ -2326,7 +2327,11 @@ export function loadFocusStack() {
       hitCount: r.hit_count,
       conclusions: JSON.parse(r.conclusions || '[]'),
     }))
-  } catch {
+  } catch (err) {
+    logWarn(err, {
+      scope: 'db',
+      operation: 'load_focus_stack',
+    })
     return []
   }
 }
@@ -2355,7 +2360,11 @@ export function saveFocusStack(stack) {
     })
     tx(stack || [])
   } catch (err) {
-    console.warn('[focus-persist] saveFocusStack failed:', err.message)
+    logWarn(err, {
+      scope: 'db',
+      operation: 'save_focus_stack',
+      metadata: { frameCount: Array.isArray(stack) ? stack.length : 0 },
+    })
   }
 }
 
@@ -2412,7 +2421,11 @@ export function loadThreadState() {
       closedAt: r.closed_at || null,
     }))
     return { threads, foregroundId, commitments }
-  } catch {
+  } catch (err) {
+    logWarn(err, {
+      scope: 'db',
+      operation: 'load_thread_state',
+    })
     return null
   }
 }
@@ -2474,7 +2487,15 @@ export function saveThreadState(threadState) {
     })
     tx()
   } catch (err) {
-    console.warn('[thread-persist] saveThreadState failed:', err.message)
+    logWarn(err, {
+      scope: 'db',
+      operation: 'save_thread_state',
+      metadata: {
+        threadCount: Array.isArray(ts.threads) ? ts.threads.length : 0,
+        commitmentCount: Array.isArray(ts.commitments) ? ts.commitments.length : 0,
+        mergedAwayCount: Array.isArray(ts.mergedAwayIds) ? ts.mergedAwayIds.length : 0,
+      },
+    })
   }
 }
 
@@ -2513,7 +2534,17 @@ export function insertRecallAudit({
       source
     )
   } catch (err) {
-    console.warn('[recall_audit] insert failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'insert_recall_audit',
+      metadata: {
+        hasTurnLabel: !!turn_label,
+        hasFromId: !!from_id,
+        matchedCount: Array.isArray(matched_mem_ids) ? matched_mem_ids.length : 0,
+        chosenCount: chosen_count,
+        source,
+      },
+    })
   }
 }
 
@@ -2549,7 +2580,17 @@ export function insertExtractAudit({
       skip_reason
     )
   } catch (err) {
-    console.warn('[extract_audit] insert failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'insert_extract_audit',
+      metadata: {
+        hasTurnLabel: !!turn_label,
+        hasFromId: !!from_id,
+        extractedCount: Array.isArray(extracted_mem_ids) ? extracted_mem_ids.length : 0,
+        skipped,
+        hasSkipReason: !!skip_reason,
+      },
+    })
   }
 }
 
@@ -2557,7 +2598,11 @@ export function getRecentRecallAudits(limit = 50) {
   try {
     return getDB().prepare(`SELECT * FROM recall_audit ORDER BY id DESC LIMIT ?`).all(limit)
   } catch (err) {
-    console.warn('[recall_audit] read failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'read_recent_recall_audits',
+      metadata: { limit },
+    })
     return []
   }
 }
@@ -2566,7 +2611,11 @@ export function getRecentExtractAudits(limit = 50) {
   try {
     return getDB().prepare(`SELECT * FROM extract_audit ORDER BY id DESC LIMIT ?`).all(limit)
   } catch (err) {
-    console.warn('[extract_audit] read failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'read_recent_extract_audits',
+      metadata: { limit },
+    })
     return []
   }
 }
@@ -2586,7 +2635,11 @@ export function getRecallAuditStats({ sinceIso = null } = {}) {
       FROM recall_audit ${sinceClause}
     `).get(...args)
   } catch (err) {
-    console.warn('[recall_audit] stats failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'recall_audit_stats',
+      metadata: { hasSinceIso: !!sinceIso },
+    })
     return null
   }
 }
@@ -2604,8 +2657,11 @@ export function getExtractAuditStats({ sinceIso = null } = {}) {
       FROM extract_audit ${sinceClause}
     `).get(...args)
   } catch (err) {
-    console.warn('[extract_audit] stats failed:', err.message)
+    logWarn(err, {
+      scope: 'db.audit',
+      operation: 'extract_audit_stats',
+      metadata: { hasSinceIso: !!sinceIso },
+    })
     return null
   }
 }
-

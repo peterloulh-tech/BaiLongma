@@ -7,21 +7,8 @@
 import { searchMemories, getMemoriesByDateRange } from '../db.js'
 import { extractKeywords } from './keywords.js'
 import { parseTemporalHints } from './temporal-parser.js'
-
-// 消息格式解析
-// 格式：[ID:xxxxxx] 2026-04-13 10:00:00 [渠道] 内容
-// 或：  TICK 2026-04-13-10:00:00
-export function parseMessageInput(message) {
-  if (/^TICK\s/i.test(message.trim())) {
-    return { isTick: true, senderId: null, messageBody: '' }
-  }
-  const match = message.match(/^\[([^\]]+)\]\s*[\d\-T:+]+\s*\[[^\]]*\]\s*(.*)$/s)
-  return {
-    isTick: false,
-    senderId: match ? match[1] : null,
-    messageBody: match ? match[2].trim() : message,
-  }
-}
+import { logWarn } from '../runtime/error-logger.js'
+export { parseMessageInput } from './injector/message-input.js'
 
 // 桶内重排：salience >= 4 的提到前面（按 salience 高到低），
 // 同 boost 组内 timestamp 距今超过 365 天的下沉到该组末尾，
@@ -153,8 +140,18 @@ export async function searchRelevantMemories({
         vecAppended = vecHits.filter(m => !existingIds.has(m.id) && m._vecScore > 0.5)
       }
     }
-  } catch {
-    // 静默：embedding 模块导入失败、API 异常等都不影响 FTS5 兜底结果
+  } catch (err) {
+    logWarn(err, {
+      scope: 'memory.injector',
+      operation: 'vector_recall',
+      metadata: {
+        focusKeywordCount: focusKws.length,
+        contextHitCount: contextHitsCapped.length,
+        focusHitCount: focusHitsCapped.length,
+        focusLimit,
+        contextLimit,
+      },
+    })
   }
 
   const focusHitsRanked   = rerankByImportance(focusHitsCapped)
