@@ -1888,8 +1888,13 @@ async function playTTSReply(text) {
 // 协议标记（[RECALL:…]/[SET_TASK:…]/[CLEAR_TASK]/[UPDATE_PERSONA:…]）剥离。与后端 markers.js 等价；
 // 流式场景额外把"末尾尚未闭合的标记起始"整段藏起，避免半截标记被显示或念出来（等 ] 到了再放出）。
 const MARKER_STRIP_RE = /\[(?:RECALL:[\s\S]*?|SET_TASK:[\s\S]*?|CLEAR_TASK|UPDATE_PERSONA:[\s\S]*?)\]/g;
+const THINK_STRIP_RE = /<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gi;
+const UNCLOSED_THINK_STRIP_RE = /<think(?:ing)?\b[^>]*>[\s\S]*$/i;
 function cleanStreamText(raw) {
-  let s = String(raw || '').replace(MARKER_STRIP_RE, '');
+  let s = String(raw || '')
+    .replace(THINK_STRIP_RE, '')
+    .replace(UNCLOSED_THINK_STRIP_RE, '')
+    .replace(MARKER_STRIP_RE, '');
   const lastOpen = s.lastIndexOf('[');
   if (lastOpen >= 0 && s.indexOf(']', lastOpen) === -1) {
     // 仅当 '[' 后看起来是协议标记关键字（全大写/下划线，可带 ":..."）才藏；不误伤 [链接](url) 等普通括号

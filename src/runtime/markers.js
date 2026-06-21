@@ -23,12 +23,16 @@ const CLEAR_TASK_PARSE = /\[CLEAR_TASK\]/
 const UPDATE_PERSONA_PARSE = /\[UPDATE_PERSONA:\s*([\s\S]+?)\]/
 
 // ── 剥离用正则（global，用于从正文中删除）────────────────────────────
-// 与原 llm.js stripProtocolMarkersForDelivery 378-382 完全一致。
-const THINK_STRIP = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi
+// 覆盖完整和未闭合的 <think> 尾段；后者常见于流式中断。
+const THINK_STRIP = /<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gi
+const UNCLOSED_THINK_STRIP = /<think(?:ing)?\b[^>]*>[\s\S]*$/i
+const INVOKE_STRIP = /<invoke\s+name="[^"]+">[\s\S]*?<\/invoke>/gi
 const RECALL_STRIP = /\[RECALL:\s*.+?\]/g
 const SET_TASK_STRIP = /\[SET_TASK:\s*[\s\S]+?\]/g
 const CLEAR_TASK_STRIP = /\[CLEAR_TASK\]/g
 const UPDATE_PERSONA_STRIP = /\[UPDATE_PERSONA:\s*[\s\S]+?\]/g
+const PRIVATE_HEADING_RE = /^\s*(?:思考|思考过程|内部思考|推理|推理过程|analysis|reasoning)\s*[:：]/i
+const FINAL_HEADING_RE = /(?:^|\n)\s*(?:最终回答|最终答复|回答|回复|结论|final(?:\s+answer)?)\s*[:：]\s*/i
 
 /**
  * 只解析、不做副作用。提取 4 种标记的捕获值。
@@ -60,11 +64,36 @@ export function parseMarkers(text) {
  */
 export function stripMarkers(text, { stripThink = true } = {}) {
   let s = String(text || '')
-  if (stripThink) s = s.replace(THINK_STRIP, '')
+  if (stripThink) s = s.replace(THINK_STRIP, '').replace(UNCLOSED_THINK_STRIP, '')
   return s
     .replace(RECALL_STRIP, '')
     .replace(SET_TASK_STRIP, '')
     .replace(CLEAR_TASK_STRIP, '')
     .replace(UPDATE_PERSONA_STRIP, '')
+    .trim()
+}
+
+export function stripPrivateReasoning(text) {
+  let s = stripMarkers(text)
+  if (PRIVATE_HEADING_RE.test(s)) {
+    const finalMatch = s.match(FINAL_HEADING_RE)
+    s = finalMatch && typeof finalMatch.index === 'number'
+      ? s.slice(finalMatch.index + finalMatch[0].length)
+      : ''
+  }
+  return s.trim()
+}
+
+/**
+ * 用户可见出口的最后净化：剥掉私有思考、运行时标记和文本 XML 工具调用。
+ * trace 仍保留原始内容，方便排障。
+ */
+export function sanitizeUserVisibleText(text) {
+  let s = stripPrivateReasoning(text)
+    .replace(INVOKE_STRIP, '')
+    .trim()
+
+  return s
+    .replace(/^\s*(?:最终回答|最终答复|回答|回复|结论|final(?:\s+answer)?)\s*[:：]\s*/i, '')
     .trim()
 }

@@ -5,7 +5,7 @@ import { getToolSchemas } from './capabilities/schemas.js'
 import { recordUsage, shouldThrottle } from './quota.js'
 import { insertActionLog } from './db.js'
 import { isTerminalInternalToolRound } from './runtime/tool-protocol.js'
-import { stripMarkers } from './runtime/markers.js'
+import { sanitizeUserVisibleText, stripPrivateReasoning } from './runtime/markers.js'
 import { beginTurn } from './runtime/turn-trace.js'
 import { createMergedAbortSignal } from './capabilities/abort-utils.js'
 import { filterStrictEvaluationTools, isToolForbiddenInStrictEvaluation, makeStrictForbiddenToolResult } from './runtime/strict-evaluation.js'
@@ -511,7 +511,7 @@ function shouldPersistActionLog(toolName) {
 // 文本标记后返回正文。内容本身不做客套裁剪 / 行去重 / 改写。
 function stripProtocolMarkersForDelivery(text) {
   // 单一真相源：src/runtime/markers.js。剥离语义（含末尾 trim）与原正则完全一致。
-  return stripMarkers(text)
+  return sanitizeUserVisibleText(text)
 }
 
 const TOOL_LOOP_LIMITS = {
@@ -931,9 +931,11 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       }
       throw err
     }
-    const { content, reasoningContent, toolCalls, aborted } = roundResult
+    const { content: rawContent, reasoningContent, toolCalls, aborted } = roundResult
+    const content = sanitizeUserVisibleText(rawContent)
+    const contentWithoutPrivateReasoning = stripPrivateReasoning(rawContent)
 
-    trace.recordRound({ round, inputOffset: roundInputOffset, content, reasoningContent, toolCalls, aborted })
+    trace.recordRound({ round, inputOffset: roundInputOffset, content: rawContent, reasoningContent, toolCalls, aborted })
 
     // 跨轮累积 content 时的去重保护：如果新段已经是 allContent 末尾的字面重复，
     // 跳过追加，避免 [Round N: "X"] + [Round N+1: "X"] 拼成 "X\nX"。
@@ -955,8 +957,8 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
 
     // 若无 JSON 工具调用，尝试从内容中解析 XML 格式工具调用（MiniMax 备用格式）
     let effectiveToolCalls = toolCalls
-    if (toolCalls.length === 0 && content) {
-      const xmlCalls = parseXmlToolCalls(content)
+    if (toolCalls.length === 0 && contentWithoutPrivateReasoning) {
+      const xmlCalls = parseXmlToolCalls(contentWithoutPrivateReasoning)
       if (xmlCalls.length > 0) {
         console.log(`[工具调用] 检测到 XML 格式工具调用，共 ${xmlCalls.length} 个`)
         effectiveToolCalls = xmlCalls
@@ -1074,6 +1076,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       try { args = JSON.parse(tc.arguments || '{}') } catch { args = {} }
       const hadEmptyArguments = !tc.arguments || tc.arguments === '{}'
       const normalizedArgs = normalizeArgs(tc.name, args)
+      if ((tc.name === 'send_message' || tc.name === 'express') && normalizedArgs.content != null) {
+        normalizedArgs.content = sanitizeUserVisibleText(normalizedArgs.content)
+      }
       const fingerprint = buildToolFingerprint(tc.name, normalizedArgs)
       const stopReason = getToolLoopStopReason(toolLoopState, tc.name, fingerprint)
       return { tc, normalizedArgs, fingerprint, stopReason, hadEmptyArguments }

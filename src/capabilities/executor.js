@@ -28,6 +28,7 @@ import { execManageReminder } from './tools/reminders.js'
 import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
 import { execManageRule } from './tools/rules.js'
 import { runWorkReview } from '../review/reviewer.js'
+import { sanitizeUserVisibleText } from '../runtime/markers.js'
 export { calculateNextDueAt } from './tools/reminders.js'
 export { autoSpeakForVoiceReply } from './tools/media.js'
 export { persistAppState } from './tools/ui.js'
@@ -377,7 +378,7 @@ async function execSendMessage({ target_id, content = '', channel = 'AUTO', imag
   if (!target_id) return '错误：未提供 target_id'
 
   const resolvedId = normalizeConversationPartyId(target_id)
-  const cleanedContent = content == null ? '' : String(content).trim()
+  const cleanedContent = content == null ? '' : sanitizeUserVisibleText(content)
   const media = prepareOutboundMedia({ image_path, media_path })
   if (media?.error) return `错误：${media.error}`
   if (!cleanedContent && !media) return '错误：未提供消息内容'
