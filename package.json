@@ -38,7 +38,8 @@
     "smoke:tools": "node scripts/smoke-tools.mjs",
     "smoke:tool-factory-web": "node scripts/smoke-tool-factory-web-e2e.mjs",
     "smoke:brain-ui": "node scripts/smoke-brain-ui.mjs",
-    "smoke:social": "node scripts/smoke-social.mjs"
+    "smoke:social": "node scripts/smoke-social.mjs",
+    "smoke:mac-artifacts": "node scripts/smoke-mac-artifacts.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
@@ -93,6 +94,7 @@
       "!scripts/smoke-*.mjs",
       "!src/**/__pycache__/**",
       "!src/**/*.pyc",
+      "!**/node_modules/better-sqlite3/build/Release/test_extension.node",
       "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,*.d.ts}",
       "!**/node_modules/.cache",
       "!**/.vscode",
