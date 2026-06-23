@@ -496,18 +496,23 @@ async function tryHandleDirectWeatherTurn(input, msg, { finishTurn } = {}) {
   if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(reply)
   deliverFallbackReply(msg, reply, timestamp)
 
-  if (hasACUIClient()) {
-    const id = `weathercard-${Date.now()}`
-    emitUICommand({
-      op: 'mount',
-      id,
-      component: 'WeatherCard',
-      props: cardProps,
-      hint: { placement: 'notification', enter: 'flash-in', exit: 'flash-out' },
-    })
-    addActiveUICard(id, { component: 'WeatherCard' })
-    emitEvent('action', { tool: 'ui_show', summary: '推送卡片', detail: 'WeatherCard' })
-  }
+  // 推一个 Scene 天气 surface(取代旧 ACUI WeatherCard)。
+  //   id 按城市稳定 → 同城再查会原地更新/morph，而非堆叠新卡。
+  //   intent=ambient：天气是看完即过的环境信息，由 shell 决定低调入场。
+  //   无连接的 shell 也无妨：sceneStore 记录状态，shell 连上后自动同步。
+  const sceneCity = cardProps.city || '此地'
+  const surfaceId = `weather-${String(sceneCity).trim().toLowerCase().replace(/\s+/g, '-')}`
+  sceneStore.set(surfaceId, {
+    kind: 'weather',
+    data: {
+      city: cardProps.city,
+      temp: cardProps.temp,
+      condition: cardProps.condition,
+      forecast: cardProps.forecast,
+    },
+    intent: 'ambient',
+  })
+  emitEvent('action', { tool: 'ui_set', summary: '放置天气 surface', detail: surfaceId })
 
   finishTurn?.(reply)
   return true
@@ -1095,14 +1100,10 @@ async function runTurn(input, label, msg = null) {
     })
     throwIfAborted(controller.signal)
 
-    // When weather keywords are detected, auto-pop WeatherCard after 1 second
-    if (runtimeInjection.weatherCardProps && hasACUIClient()) {
-      setTimeout(() => {
-        const id = `weathercard-${Date.now()}`
-        emitUICommand({ op: 'mount', id, component: 'WeatherCard', props: runtimeInjection.weatherCardProps, hint: { placement: 'notification', enter: 'flash-in', exit: 'flash-out' } })
-        addActiveUICard(id, { component: 'WeatherCard' })
-      }, 1000)
-    }
+    // 注：旧版在此硬编码自动弹一张 ACUI WeatherCard。现已删除——天气走 LLM 回合时，
+    //   Agent 会依 prompt 的 "Weather Surface Rules" 自行 ui_set 一个 weather surface
+    //   (决策归 Agent)；无 LLM 的天气快速路径(tryHandleDirectWeatherTurn)则直接放 surface。
+    //   两条路径各自负责，避免同一次查询重复出两张天气卡。
 
     // 用户跨渠道可达性快照（让 L2 主动消息能选对渠道：用户在外面就发微信，在电脑前就发本地）
     const presenceText = formatPresenceForPrompt(PRIMARY_USER_ID)

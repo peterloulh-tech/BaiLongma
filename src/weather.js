@@ -6,6 +6,11 @@ import { getConfig, setConfig } from './db.js'
 
 const CACHE_TTL_MS = 30 * 60 * 1000  // 30 分钟
 const FETCH_TIMEOUT_MS = 6000
+// 硬超时兜底:观测到 AbortSignal.timeout 在本运行时偶尔无法中断卡住的 fetch
+//   (连接已建立但 wttr.in 限流/不响应)。用 Promise.race 保证 fetchAndCacheWeather
+//   一定在此时限内 settle —— 天气快速路径(index.js)在 LLM 之前同步 await 它,
+//   一旦卡死整个回合无回复。略大于 AbortSignal 时限,正常路径仍由 AbortSignal 先收口。
+const HARD_TIMEOUT_MS = 8000
 
 // 触发天气注入的关键词（中英双语）
 const WEATHER_RE = /天气|气温|温度|下雨|下雪|晴天?|阴天?|多云|刮风|风大|雾霾|冷不冷|热不热|穿什么|穿衣|要下[雨雪]|今天冷|今天热|weather|forecast|raining|snowing|temperature|how.*cold|how.*hot/i
@@ -194,7 +199,11 @@ export async function fetchAndCacheWeather(location) {
   const promise = (async () => {
     try {
       console.log(`[天气] 拉取 ${location} 天气...`)
-      const data = await fetchWeatherData(location)
+      const data = await Promise.race([
+        fetchWeatherData(location),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`hard timeout ${HARD_TIMEOUT_MS}ms`)), HARD_TIMEOUT_MS)),
+      ])
       const parsed = parseWeatherData(data, location)
       if (!parsed) return null
       cache = { location, ...parsed, fetchedAt: Date.now() }
