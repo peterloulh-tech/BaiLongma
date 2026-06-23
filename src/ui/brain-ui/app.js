@@ -1,6 +1,7 @@
 ﻿import { renderBrainUiApp } from "./app-shell.js";
 import { API } from "./api-client.js";
 import { bootstrapACUI } from "./acui/bootstrap.js";
+import { bootstrapScene } from "../scene-shell/bootstrap.js";
 import { initChat, friendlyChannelLabel } from "./chat.js";
 import { initPanelCollapse } from "./panel-collapse.js";
 import { ThoughtStream } from "./thought-stream.js";
@@ -2165,6 +2166,7 @@ chat.restoreChatHistory();
 chat.unlockAudioOnFirstGesture();
 
 bootstrapACUI();
+bootstrapScene();  // Scene 架构 shell(/scene),与 ACUI 并存。拆旧 ACUI 阶段1:集成。
 initPanelCollapse();
 initWechatPopup();
 

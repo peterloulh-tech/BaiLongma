@@ -28,29 +28,24 @@
 
 * { box-sizing: border-box; }
 
-html, body {
-  margin: 0;
-  height: 100%;
-  background:
-    radial-gradient(1200px 800px at 70% -10%, #16203200 0%, #0b0e14 60%),
-    var(--bg);
-  color: var(--text);
-  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;
-}
+/* scene-shell 是叠加层:不污染宿主页的 html/body(渲染端不该决定宿主页 chrome)。
+ * 页面背景由宿主决定——独立页(index/demo.html)在各自 <style> 里自带,嵌入 brain-ui 时用宿主的。 */
 
-/* 舞台:所有 surface 的根容器。flex 流式布局,具体落位由 intent 分区决定。 */
+/* 舞台:所有 surface 的根容器。固定全屏叠加层,本身不挡宿主交互;flex 落位由 intent 分区决定。 */
 #stage {
-  position: relative;
-  height: 100%;
-  width: 100%;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;           /* 盖在宿主 UI 之上 */
+  pointer-events: none;          /* 叠加层空白处不拦截宿主页点击 */
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 18px;
   padding: 40px;
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* confront 出现时压暗背景,把焦点逼到中央(背景退后)。 */
@@ -76,6 +71,7 @@ html, body {
   max-width: min(560px, 86vw);
   /* will-change + transform 让 enter/exit/morph 走 GPU 合成层,避免重排卡顿。 */
   will-change: transform, opacity;
+  pointer-events: auto;          /* #stage 关掉了指针事件,surface 自身要恢复交互 */
 }
 
 /* intent 分区:shell 自行把语义重要性映射成呈现强度与落位。

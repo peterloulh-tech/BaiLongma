@@ -6,6 +6,9 @@
   <title>scene-shell · 离线动画演示(no server)</title>
   <link rel="stylesheet" href="./styles.css" />
   <style>
+    /* 独立页自带页面 chrome(styles.css 不再管 html/body,以便作为叠加层嵌入宿主页)。 */
+    html, body { margin: 0; height: 100%; overflow: hidden;
+      background: radial-gradient(1200px 800px at 70% -10%, #16203200 0%, #0b0e14 60%), var(--bg); }
     /* 离线演示的控制条:手造 scene 直喂 applyScene,无任何 WebSocket。 */
     #panel {
       position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 100;

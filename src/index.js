@@ -85,17 +85,27 @@ collectInstalledSoftware()
 // the user has before being asked "上服务器看看".
 collectLocalResources()
 
+// 启动期"自感知"采集(地理/天气/热点/本机 agent/已装工具)是可选的、依赖网络或子进程的步骤,
+// 绝不应阻塞后端启动:某个外部调用卡死(如 DNS/connect 被挂住,连 AbortController 都打不断)
+// 不能把整个 startAPI 拖到永不执行。给每个采集套硬上限,超时即跳过(非致命),保证一定能启动。
+function withStartupTimeout(promise, ms, label) {
+  return Promise.race([
+    Promise.resolve(promise).catch(err => { console.warn(`${label} 失败(忽略):`, err?.message || err); return null }),
+    new Promise(resolve => setTimeout(() => { console.warn(`${label} 超时 ${ms}ms,跳过(不阻塞启动)`); resolve(null) }, ms)),
+  ])
+}
+
 // Collect geo-location + live weather (refresh on IP change or after 7 days; weather refreshed every time)
-const geoResult = await collectGeoWeather()
+const geoResult = await withStartupTimeout(collectGeoWeather(), 12000, '[startup] geo-weather')
 
 // Collect trending topics (CN → Weibo+Zhihu, others → HN+Reddit; 1h cache)
-await collectTrending(geoResult?.location?.country_code)
+await withStartupTimeout(collectTrending(geoResult?.location?.country_code), 12000, '[startup] trending')
 
 // Scan locally installed AI agents (Claude Code, Codex, Hermes, OpenClaw, etc.) and persist to known_agents table
-await collectAgents()
+await withStartupTimeout(collectAgents(), 15000, '[startup] agents')
 
 // Load persisted installed tools
-await loadInstalledTools()
+await withStartupTimeout(loadInstalledTools(), 12000, '[startup] installed-tools')
 
 // Load Agent Skills metadata. Full SKILL.md bodies are injected only when a turn matches.
 const startupSkills = refreshSkills()

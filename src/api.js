@@ -42,6 +42,7 @@ const SYSTEM_PROMPT_PATH = paths.systemPromptHtml
 const ACTIVATION_PATH    = paths.activationHtml
 const TURN_TRACE_PATH    = paths.turnTraceHtml
 const BRAIN_UI_ASSET_ROOT = paths.brainUiAssetRoot
+const SCENE_SHELL_ASSET_ROOT = path.join(paths.resourcesDir, 'src', 'ui', 'scene-shell')
 const D3_VENDOR_PATH     = path.join(paths.resourcesDir, 'node_modules', 'd3', 'dist', 'd3.min.js')
 const SANDBOX_PATH       = paths.sandboxDir
 const DEFAULT_AGENT_NAME = '小白龙'
@@ -1361,6 +1362,38 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       } catch {
         res.writeHead(404)
         res.end('d3.min.js not found')
+      }
+      return
+    }
+
+    // Scene 架构 shell 的静态资源(新 Agent-UI,与 brain-ui 并行)
+    if (req.method === 'GET' && url.pathname.startsWith('/src/ui/scene-shell/')) {
+      const relativePath = decodeURIComponent(url.pathname.slice('/src/ui/scene-shell/'.length))
+      const assetRoot = path.resolve(SCENE_SHELL_ASSET_ROOT)
+      const assetPath = path.resolve(SCENE_SHELL_ASSET_ROOT, relativePath)
+
+      if (!isPathInside(assetRoot, assetPath)) {
+        res.writeHead(403)
+        res.end('forbidden')
+        return
+      }
+
+      try {
+        const stat = fs.statSync(assetPath)
+        if (!stat.isFile()) {
+          res.writeHead(404)
+          res.end('asset not found')
+          return
+        }
+        res.writeHead(200, {
+          'Content-Type': contentTypeFor(assetPath),
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-cache',
+        })
+        fs.createReadStream(assetPath).pipe(res)
+      } catch {
+        res.writeHead(404)
+        res.end('asset not found')
       }
       return
     }

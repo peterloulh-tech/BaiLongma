@@ -3,7 +3,12 @@ const IS_WIN = PLATFORM === 'win32'
 const IS_MAC = PLATFORM === 'darwin'
 const IS_LINUX = PLATFORM === 'linux'
 
-// Windows: 把控制台代码页切到 UTF-8，避免中文 stdout 显示为乱码
+// Windows: 把控制台代码页切到 UTF-8，避免中文 stdout 显示为乱码。
+// 用 stdio:'ignore'+windowsHide：绝不能用 stdio:'inherit' —— 在 Electron 主进程启动最早期
+// 让 chcp 子进程继承 stdout 句柄，会搅乱本进程的 stdout，导致后续 console.log 写到一定量后
+// 阻塞、整个后端 bootstrap 卡死（实测）。控制台中文显示的可靠修复在 npm 的 start/dev/
+// start:backend 脚本里（启动前 `chcp 65001 >nul`，在真正显示输出的那个控制台里设码页）；
+// 这里只作无副作用的兜底。
 if (IS_WIN) {
   try {
     require('child_process').execSync('chcp 65001', { stdio: 'ignore', windowsHide: true })
