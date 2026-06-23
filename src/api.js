@@ -5,6 +5,7 @@ import net from 'net'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
+import { handleSceneConnection, setSceneIntentHandler } from './scene/scene-server.js'
 import { pushMessage } from './queue.js'
 import { getDB, getConfig, setConfig, insertUISignal, upsertMediaHistory, getMediaHistory, updateLastJarvisConversationContent, getRecentRecallAudits, getRecentExtractAudits, getRecallAuditStats, getExtractAuditStats } from './db.js'
 import { emitEvent, addSSEClient, removeSSEClient, addACUIClient, removeACUIClient, removeActiveUICard, emitUICommand, flushStickyEvents, setStickyEvent } from './events.js'
@@ -1842,6 +1843,24 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     ws.on('error', () => removeACUIClient(ws))
   })
 
+  // ---- Scene 协议(新 Agent-UI 架构,/scene,与上面的 /acui 并行)----
+  const sceneWss = new WebSocketServer({ noServer: true })
+  sceneWss.on('connection', (ws) => handleSceneConnection(ws))
+
+  // 上行 intent:落库(复用 ui_signals 表)+ 在有语义的用户意图时推进 agent 队列。
+  // 协议规定只有"有意义的用户意图"才上行;dismiss/ended 等生命周期意图只落库供被动注入,不打扰 agent。
+  const SCENE_PASSIVE_INTENTS = new Set(['dismiss', 'ended', 'mounted', 'dwell'])
+  setSceneIntentHandler((msg) => {
+    const surface = msg.surface || 'scene'
+    const name = msg.name || 'unknown'
+    const data = msg.data || {}
+    const id = insertUISignal({ type: `scene.intent.${name}`, target: msg.surface || null, payload: data, ts: msg.ts || Date.now() })
+    emitEvent('ui_signal', { id, type: name, target: msg.surface, payload: data })
+    if (!SCENE_PASSIVE_INTENTS.has(name)) {
+      pushMessage(`UI:${surface}`, `[UI intent surface=${surface} name=${name}]\n${JSON.stringify(data, null, 2)}`, 'APP_SIGNAL')
+    }
+  })
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, `http://localhost:${port}`)
     if (url.pathname === '/acui') {
@@ -1857,6 +1876,19 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         return
       }
       acuiWss.handleUpgrade(req, socket, head, (ws) => acuiWss.emit('connection', ws, req))
+    } else if (url.pathname === '/scene') {
+      const origin = req.headers.origin
+      if (origin && !isAllowedOrigin(origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      if (!hasAllowedAccess(req, url)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      sceneWss.handleUpgrade(req, socket, head, (ws) => sceneWss.emit('connection', ws, req))
     } else if (url.pathname === '/voice/cloud') {
       cloudWss.handleUpgrade(req, socket, head, (ws) => cloudWss.emit('connection', ws, req))
     } else {

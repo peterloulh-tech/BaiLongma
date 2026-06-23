@@ -6,6 +6,7 @@ import { webSchemas } from './schemas/web.js'
 import { mediaSchemas } from './schemas/media.js'
 import { memorySchemas } from './schemas/memory.js'
 import { uiSchemas } from './schemas/ui.js'
+import { sceneSchemas } from './schemas/scene.js'
 import { taskSchemas } from './schemas/task.js'
 import { reviewSchemas } from './schemas/review.js'
 import { remindersSchemas } from './schemas/reminders.js'
@@ -22,6 +23,7 @@ export const TOOL_SCHEMAS = {
   ...mediaSchemas,
   ...memorySchemas,
   ...uiSchemas,
+  ...sceneSchemas,
   ...taskSchemas,
   ...reviewSchemas,
   ...remindersSchemas,

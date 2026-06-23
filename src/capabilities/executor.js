@@ -18,6 +18,7 @@ import { TOOL_SCHEMAS } from './schemas.js'
 import { TOOL_GROUPS } from '../memory/tool-router.js'
 import { throwIfAborted } from './abort-utils.js'
 import { execUIHide, execUIRegister, execUIShow, execUIUpdate, execUIPatch, execManageApp } from './tools/ui.js'
+import { execUISet } from './tools/scene.js'
 import { evaluateToolPolicy } from './tool-policy.js'
 import { inferToolStatus, writeToolAuditLog } from './tool-audit.js'
 import { execDeleteFile, execListDir, execMakeDir, execReadFile, execWriteFile } from './tools/filesystem.js'
@@ -245,6 +246,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execManagePrefetchTask(args)
       case 'manage_rule':
         return execManageRule(args)
+      case 'ui_set':
+        return execUISet(args)
       case 'ui_show':
         return execUIShow(args)
       case 'ui_update':
