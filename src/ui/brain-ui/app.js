@@ -10,6 +10,7 @@ import { initWorldcup, toggleWorldcup, setWorldcupMode } from "./worldcup.js";
 import { enrichVisiblePersonCardFromText, initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
 import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
+import { initFeishuPopup, showFeishuPopup } from "./feishu-popup.js";
 import { attachJarvisAudioGraph, attachJarvisFx, isFxEnabledForVoice, setFxEnabledForVoice, getJarvisFxParams, setJarvisFxParams, resetJarvisFxParams, isFxUnlocked, tryUnlockFx } from "./tts-fx.js";
 import { initAudioOutputRouting, applyOutputSink, listOutputDevices, getOutputPreference, setOutputPreference } from "./audio-output.js";
 renderBrainUiApp(document.body);
@@ -1501,6 +1502,9 @@ function handle({ type, data = {} }) {
     case "show_wechat_popup":
       showWechatPopup();
       break;
+    case "show_feishu_popup":
+      showFeishuPopup();
+      break;
     case "audio_created":
       if (data.autoPlay && data.path) {
         const audioUrl = `${API}/${data.path}`;
@@ -2175,6 +2179,7 @@ chat.unlockAudioOnFirstGesture();
 bootstrapScene();  // Scene 架构 shell(/scene):声明式 Agent-UI 投影层。
 initPanelCollapse();
 initWechatPopup();
+initFeishuPopup();
 
 // ── TTS settings panel init ───────────────────────────────────────────────────
 function initTTSSettings() {

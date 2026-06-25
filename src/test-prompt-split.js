@@ -173,12 +173,22 @@ assert(sysVideo.includes('Video Mode: Reply Brevity'), 'video keyword: Video Mod
 const sysVideo2 = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: 'open youtube' })
 assert(sysVideo2.includes('Video Mode: Reply Brevity'), 'youtube: Video Mode injected')
 
-// 8.3 WeatherCard gate
+// 8.3 Weather Surface gate（工作流块现由 weather 能力经 capability-registry 注入）
 const sysWeather = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: '今天天气怎么样' })
-assert(sysWeather.includes('WeatherCard Rules'), 'weather keyword: WeatherCard Rules injected')
-assert(sysWeather.includes('wttr.in'), 'WeatherCard block contains wttr.in source line')
+assert(sysWeather.includes('Weather Surface Rules'), 'weather keyword: Weather Surface Rules injected')
+assert(sysWeather.includes('wttr.in'), 'Weather block contains wttr.in source line')
 const sysWeather2 = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: 'what about the weather' })
-assert(sysWeather2.includes('WeatherCard Rules'), 'english weather: WeatherCard Rules injected')
+assert(sysWeather2.includes('Weather Surface Rules'), 'english weather: Weather Surface Rules injected')
+
+// 8.3b 能力工作流块（hotspot / worldcup / software-install）经 capability-registry 注入
+const sysHotspot = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: '看看今天的热搜' })
+assert(sysHotspot.includes('Hotspot Panel'), 'hotspot keyword: Hotspot Panel block injected (via capability)')
+const sysWorldcup = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: '世界杯比分怎么样' })
+assert(sysWorldcup.includes('World Cup Panel'), 'worldcup keyword: World Cup Panel block injected (via capability)')
+const sysInstall = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: '帮我安装一个 QQ' })
+assert(sysInstall.includes('Software Install Workflow'), 'install keyword: Software Install Workflow block injected (via capability)')
+assert(!sysNeutral.includes('Hotspot Panel') && !sysNeutral.includes('World Cup Panel') && !sysNeutral.includes('Software Install Workflow'),
+  'neutral input: no capability workflow blocks injected')
 
 // 8.4 WeChat Connection gate
 const sysWcConn = buildSystemPrompt({ agentName: 'Longma', persona: 'p', userMessage: '帮我连接微信' })

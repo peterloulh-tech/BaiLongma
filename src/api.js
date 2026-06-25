@@ -23,6 +23,7 @@ import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState, getVideoHi
 import { MinimaxProvider } from './providers/minimax.js'
 import { handleSocialWebhook, isSocialWebhookPath } from './social/webhooks.js'
 import { getClawbotQR, logoutClawbot } from './social/wechat-clawbot.js'
+import { getFeishuStatus } from './social/feishu-ws.js'
 import { createCloudASRSession } from './voice/cloud-asr.js'
 import { getHotspots, setHotspotPanelState, getHotspotPanelState } from './hotspots.js'
 import { getWorldcup, setWorldcupPanelState, getWorldcupPanelState } from './worldcup.js'
@@ -323,6 +324,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     if (req.method === 'GET' && url.pathname === '/social/wechat-clawbot/qr') {
       if (!hasAllowedAccess(req, url)) return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
       return jsonResponse(res, 200, { ok: true, ...getClawbotQR() })
+    }
+
+    // GET /social/feishu/status — 飞书长连接当前状态 + 是否已配置凭据（配置弹窗用）
+    if (req.method === 'GET' && url.pathname === '/social/feishu/status') {
+      if (!hasAllowedAccess(req, url)) return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
+      const configured = !!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)
+      return jsonResponse(res, 200, { ok: true, status: getFeishuStatus(), configured })
     }
 
     // POST /social/wechat-clawbot/logout — clear credentials and disconnect
@@ -1199,6 +1207,15 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       req.on('end', async () => {
         try {
           const updates = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
+          // 飞书凭据是否「真的变了」——必须在 setSocialConfig 覆盖 env 之前快照旧值。
+          // 用户在弹窗里反复点「连接」会用相同凭据多次 POST；飞书长连接是 cluster 模式，
+          // 每次重启都 close 旧连接再开新连接，连发会抖、入站消息可能投到正被顶掉的连接上。
+          // 因此飞书只在凭据确实变化时才重启（与 discord 的 truthy 重启分开处理）。
+          const feishuTouched = ('FEISHU_APP_ID' in updates) || ('FEISHU_APP_SECRET' in updates)
+          const feishuChanged = feishuTouched && (
+            (updates.FEISHU_APP_ID || '') !== (process.env.FEISHU_APP_ID || '') ||
+            (updates.FEISHU_APP_SECRET || '') !== (process.env.FEISHU_APP_SECRET || '')
+          )
           setSocialConfig(updates)
           // Restart the connector for each platform whose key was updated
           const PLATFORM_KEYS = {
@@ -1211,10 +1228,23 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               )
             }
           }
+          // 飞书：仅在凭据变化且配齐时重启（去抖，见上方快照）。断开走下方 _feishu_disconnect。
+          if (feishuChanged && process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+            restartConnector('feishu', { pushMessage, emitEvent }).catch(err =>
+              console.warn('[social] restart feishu failed:', err.message)
+            )
+          }
           // Restart the ClawBot connector when the user clicks "Connect WeChat"
           if (updates._clawbot_connect) {
             restartConnector('wechat-clawbot', { pushMessage, emitEvent }).catch(err =>
               console.warn('[social] restart wechat-clawbot failed:', err.message)
+            )
+          }
+          // 断开飞书：清空凭据是 falsy，不会命中上面 PLATFORM_KEYS 的 truthy 重启，
+          // 需显式重启 —— 新连接器读不到凭据即返回 null，状态归 idle、旧长连接被 close。
+          if (updates._feishu_disconnect) {
+            restartConnector('feishu', { pushMessage, emitEvent }).catch(err =>
+              console.warn('[social] restart feishu failed:', err.message)
             )
           }
           jsonResponse(res, 200, { ok: true, social: getSocialConfig() })

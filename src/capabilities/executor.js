@@ -16,6 +16,7 @@ import { installTool, uninstallTool, listInstalledTools, isInstalledTool, execut
 import { execManageToolFactory } from './tool-factory.js'
 import { TOOL_SCHEMAS } from './schemas.js'
 import { TOOL_GROUPS } from '../memory/tool-router.js'
+import { findCapabilitiesByQuery } from './capability-registry.js'
 import { throwIfAborted } from './abort-utils.js'
 import { execUISet } from './tools/scene.js'
 import { sceneStore } from '../scene/scene-store.js'
@@ -288,6 +289,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execFindTool(args)
       case 'connect_wechat':
         return execConnectWechat()
+      case 'connect_feishu':
+        return execConnectFeishu()
       case 'set_security':
         return execSetSecurity(args)
       default:
@@ -565,6 +568,14 @@ function execFindTool({ query } = {}) {
       for (const name of group.tools) matched.add(name)
     }
   }
+  // ①b 能力发现：query 命中能力（triggers/label/summary）→ 收下其工具，并带回工作流摘要。
+  //   这是「自感知按需激活」的发现半：已迁能力（web/hotspot/worldcup/software-install）的
+  //   触发词与工具不在 TOOL_GROUPS，靠这里从能力注册表发现；命中时把能力的工作流(context)
+  //   摘要一并回给 Agent，让它即便在关键词没进 prompt 的轮次也知道「这套工具该怎么用」。
+  const capHits = findCapabilitiesByQuery(q)
+  for (const cap of capHits) {
+    for (const name of cap.tools) matched.add(name)
+  }
   // ② 英文字面：query 任一词出现在工具名或描述里
   const catalog = [
     ...Object.entries(TOOL_SCHEMAS)
@@ -577,6 +588,14 @@ function execFindTool({ query } = {}) {
     if (terms.some(t => t.length >= 2 && hay.includes(t))) matched.add(name)
   }
 
+  // 能力工作流摘要：命中的能力把 context 压成一句话回给 Agent（自感知按需激活的「怎么用」半）。
+  const capabilities = capHits.map(cap => ({
+    id: cap.id,
+    label: cap.label,
+    summary: cap.summary,
+    workflow: cap.context ? String(cap.context).replace(/\s+/g, ' ').trim().slice(0, 280) : '',
+  }))
+
   // 不把已是 CORE 的工具当"新发现"返回（模型本来就有），减少噪声。
   const ALWAYS_PRESENT = new Set(['find_tool', 'recall_memory', 'ui_set'])
   const found = [...matched].filter(name => !ALWAYS_PRESENT.has(name))
@@ -584,6 +603,7 @@ function execFindTool({ query } = {}) {
   if (found.length === 0) {
     return toolJson({
       ok: true, tool: 'find_tool', query, loaded: [], matches: [],
+      capabilities,
       note: '没找到匹配的工具。换个说法再试，或直接告诉用户这件事现在做不了。可调 list_tools 看全部工具。',
     })
   }
@@ -602,7 +622,9 @@ function execFindTool({ query } = {}) {
     query,
     loaded: matches.map(m => m.name),
     matches,
-    note: '这些工具已为本轮装载——现在直接调用你需要的那个即可，不必再 find_tool。',
+    capabilities,
+    note: '这些工具已为本轮装载——现在直接调用你需要的那个即可，不必再 find_tool。' +
+      (capabilities.length ? '相关能力的工作流见 capabilities 字段，按它行动。' : ''),
   })
 }
 
@@ -984,6 +1006,18 @@ function execConnectWechat() {
   }
   emitEvent('show_wechat_popup', {})
   return toolJson({ ok: true, status: 'popup_shown', message: '已弹出微信连接二维码界面，请告知用户扫码操作。' })
+}
+
+function execConnectFeishu() {
+  if (sceneClientCount() === 0) {
+    return toolJson({ ok: false, error: '当前没有界面客户端，无法弹出飞书配置界面。' })
+  }
+  emitEvent('show_feishu_popup', {})
+  return toolJson({
+    ok: true,
+    status: 'popup_shown',
+    message: '已弹出飞书连接配置界面（含分步引导 + App ID/Secret 输入框 + 打开飞书开放平台按钮）。请引导用户：去飞书开放平台创建企业自建应用、加机器人能力和 im:message 权限、在「事件订阅」选「使用长连接接收事件」并订阅 im.message.receive_v1（不要开加密推送），把 App ID 和 App Secret 填进弹窗点连接即可，无需公网地址。',
+  })
 }
 
 function execSetSecurity({ file_sandbox, exec_sandbox, reason = '' }) {

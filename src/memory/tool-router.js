@@ -27,7 +27,8 @@
 // 输出：去重后的 tools: string[]
 
 import { getStatus as getTickerStatus } from '../ticker.js'
-import { isSoftwareInstallRequest, SOFTWARE_INSTALL_TRIGGERS } from '../software-install-intent.js'
+// 已迁能力的工具名 + 工具注入选择器由能力注册表提供（单向依赖：registry 不 import 本文件）。
+import { WEB_TOOLS, HOTSPOT_TOOLS, capabilityToolsFor } from '../capabilities/capability-registry.js'
 
 // ---- 工具分组 ----
 //
@@ -48,18 +49,15 @@ const TASK_CTRL_OPENER  = ['set_task']  // 没任务时只暴露 set_task
 // 无任务的临时成果，靠下面这组触发词 / find_tool 主动拉进来。
 const REVIEW_TOOLS      = ['review_work']
 
-const WEB_TOOLS         = ['web_search', 'fetch_url', 'browser_read']
+// WEB_TOOLS / HOTSPOT_TOOLS 由能力注册表提供（见顶部 import）——它们既是 web/hotspot 能力的
+// 工具，也被下面的 startup self-check / media / fallback 复用。WORLDCUP_TOOLS /
+// SOFTWARE_INSTALL_TOOLS 已随能力迁出本文件。
 const FILESYSTEM_TOOLS  = ['read_file', 'write_file', 'delete_file', 'list_dir', 'make_dir']
 const EXEC_TOOLS        = ['exec_command', 'exec_quick_command', 'exec_task_command', 'exec_background_command', 'download_file', 'kill_process', 'list_processes']
-const SOFTWARE_INSTALL_TOOLS = ['install_software', 'list_processes']
 const MEDIA_TOOLS       = ['media_mode', 'music']
 const REMINDER_TOOLS    = ['manage_reminder']
 const PREFETCH_TOOLS    = ['manage_prefetch_task']
 const TICKER_TOOLS      = ['set_tick_interval']
-const HOTSPOT_TOOLS     = ['hotspot_mode']
-// 世界杯模式打开面板即可（赛况数据由 runtime-injector 注入上下文）；
-// 追问细节（首发名单/射手榜等）要联网，所以 WEB_TOOLS 一并带上
-const WORLDCUP_TOOLS    = ['worldcup_mode', ...WEB_TOOLS]
 const STARTUP_SELF_CHECK_TOOLS = [
   'speak',
   'complete_startup_self_check',
@@ -72,7 +70,7 @@ const PERSON_CARD_TOOLS = ['person_card_mode']
 const FOCUS_BANNER_TOOLS = ['focus_banner']
 const ADMIN_TOOLS       = [
   'manage_tool_factory', 'install_tool', 'uninstall_tool', 'list_tools',
-  'set_security', 'connect_wechat',
+  'set_security', 'connect_wechat', 'connect_feishu',
   'set_location', 'set_agent_name', 'manage_rule',
 ]
 
@@ -107,13 +105,6 @@ const EXEC_TRIGGERS = [
   'bash', 'terminal', 'console',
 ]
 
-const WEB_TRIGGERS = [
-  '搜', '搜索', '查一下', '查查', '百度', '谷歌', '上网', '在线', '网页',
-  '网址', '链接', '浏览', '打开网页', '看看网上', '抓一下',
-  'search', 'google', 'bing', 'fetch', 'http://', 'https://', 'url',
-  'web', 'browser', 'browse', 'website', '.com', '.cn', '.org', '.io',
-]
-
 const MEDIA_TRIGGERS = [
   '音乐', '歌', '听', '播放', '放首', '放一首', '放点', '视频', '看视频',
   '抖音', 'b站', 'bilibili', '电影', '电视剧',
@@ -136,17 +127,6 @@ const TICKER_TRIGGERS = [
   'heartbeat', 'interval',
 ]
 
-const HOTSPOT_TRIGGERS = [
-  '热点', '热搜', '热门', '新闻', '今日', '趋势', '榜单', '头条', 'trending',
-  'news', 'hot ', 'top ', '微博热搜', '热议',
-]
-
-const WORLDCUP_TRIGGERS = [
-  '世界杯', '赛况', '比分', '赛程', '对阵', '积分榜', '小组赛', '淘汰赛',
-  '谁赢', '进球', '几比几', '揭幕战', '球赛', '足球赛',
-  'world cup', 'worldcup', 'fifa',
-]
-
 const PERSON_CARD_TRIGGERS = [
   '谁是', '是谁', '是誰', '是个什么人', '是個什麼人', '是什么人', '是什麼人',
   '是干嘛的', '是幹嘛的', '人物卡片', '人物卡', 'person card',
@@ -161,7 +141,7 @@ const FOCUS_BANNER_TRIGGERS = [
 const ADMIN_TRIGGERS = [
   '装一下', '安装', '装个', '卸载', '装好', '装上', '工具市场', '插件',
   '自写工具', '自己写工具', '工具工厂', '工具审核', '生成工具', '注册工具',
-  '安全', '沙箱', '权限', '微信', '绑定', '连接', '配对',
+  '安全', '沙箱', '权限', '微信', '飞书', 'feishu', 'lark', '绑定', '连接', '配对',
   '位置', '在哪', '改名字', '改名', '叫你', '叫我', '管理应用', 'app 列表',
   'install tool', 'tool factory', 'generated tool', 'review tool', 'register tool',
   'uninstall', 'plugin', 'security', 'sandbox', 'wechat',
@@ -209,19 +189,17 @@ const REVIEW_TRIGGERS = [
 // 触发词 → 工具组的单一数据源。selectTools（按轮注入）和 find_tool（模型主动搜工具）
 // 共用它，避免两处各维护一份中文关键词。注：CORE / task / memory / 多模态 mmCaps gate 等
 // 特殊注入逻辑仍在 selectTools 里，这里只收录"纯关键词触发的专业组"，正好是 find_tool 要搜的范围。
+// 已迁能力（web/hotspot/worldcup/software-install）的触发词+工具已移入 capability-registry.js，
+// find_tool 改读注册表发现它们，故不再列于此。
 export const TOOL_GROUPS = [
   { triggers: FILESYSTEM_TRIGGERS,   tools: FILESYSTEM_TOOLS },
   { triggers: EXEC_TRIGGERS,         tools: EXEC_TOOLS },
-  { triggers: WEB_TRIGGERS,          tools: WEB_TOOLS },
   { triggers: MEDIA_TRIGGERS,        tools: MEDIA_TOOLS },
   { triggers: REMINDER_TRIGGERS,     tools: REMINDER_TOOLS },
   { triggers: PREFETCH_TRIGGERS,     tools: PREFETCH_TOOLS },
   { triggers: TICKER_TRIGGERS,       tools: TICKER_TOOLS },
-  { triggers: HOTSPOT_TRIGGERS,      tools: HOTSPOT_TOOLS },
-  { triggers: WORLDCUP_TRIGGERS,     tools: WORLDCUP_TOOLS },
   { triggers: PERSON_CARD_TRIGGERS,  tools: PERSON_CARD_TOOLS },
   { triggers: FOCUS_BANNER_TRIGGERS, tools: FOCUS_BANNER_TOOLS },
-  { triggers: SOFTWARE_INSTALL_TRIGGERS, tools: SOFTWARE_INSTALL_TOOLS },
   { triggers: ADMIN_TRIGGERS,        tools: ADMIN_TOOLS },
   { triggers: TTS_TRIGGERS,          tools: [MM_GEN_TOOLS.tts] },
   { triggers: LYRICS_TRIGGERS,       tools: [MM_GEN_TOOLS.lyrics] },
@@ -338,9 +316,6 @@ export function selectTools(ctx = {}) {
   if (hits(body, EXEC_TRIGGERS)) {
     for (const t of EXEC_TOOLS) out.add(t)
   }
-  if (hits(body, WEB_TRIGGERS) || isTick) {
-    for (const t of WEB_TOOLS) out.add(t)
-  }
   if (hits(body, MEDIA_TRIGGERS)) {
     for (const t of MEDIA_TOOLS) out.add(t)
     // 媒体场景常需要先联网找链接——尤其视频要 web_search 搜到可嵌入的 B 站 BV 才能播。
@@ -370,20 +345,17 @@ export function selectTools(ctx = {}) {
       for (const t of TICKER_TOOLS) suppressed.add(t)
     }
   }
-  // 热点/世界杯：关键词自动注入已移除——改由 Agent 依 prompt 规则自决是否开面板。
-  //   hotspot_mode/worldcup_mode 仍在 TOOL_GROUPS 里，Agent 想用时 find_tool 即可发现并当场装载。
-  //   仅保留 TICK 心跳对 hotspot 的广注入：awakening exploration 阶段 agent 可能主动想浏览热点。
-  if (isTick) {
-    for (const t of HOTSPOT_TOOLS) out.add(t)
-  }
+  // —— 能力注册表：已迁能力（web / hotspot / worldcup / software-install）的工具注入 ——
+  // 每个能力用自己的 toolWhen 门（web=关键词|TICK、hotspot=仅 TICK、worldcup=从不自动、
+  // software-install=isSoftwareInstallRequest），保留与旧分支等价的解耦语义。
+  const capCtx = { text: body, rawText: messageBody, isTick, mmCaps, hasTask }
+  for (const t of capabilityToolsFor(capCtx)) out.add(t)
+
   if (hitsPersonCardIntent(messageBody)) {
     for (const t of PERSON_CARD_TOOLS) out.add(t)
   }
   if (hits(body, FOCUS_BANNER_TRIGGERS) || hasTask) {
     for (const t of FOCUS_BANNER_TOOLS) out.add(t)
-  }
-  if (isSoftwareInstallRequest(messageBody)) {
-    for (const t of SOFTWARE_INSTALL_TOOLS) out.add(t)
   }
   if (hits(body, ADMIN_TRIGGERS)) {
     for (const t of ADMIN_TOOLS) out.add(t)

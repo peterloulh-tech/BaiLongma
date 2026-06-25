@@ -16,9 +16,13 @@ export function parseMessageInput(message) {
     return { isTick: true, senderId: null, messageBody: '' }
   }
   const match = message.match(/^\[([^\]]+)\]\s*[\d\-T:+]+\s*\[[^\]]*\]\s*(.*)$/s)
+  // queue.js 把输入头编码成 `[canonicalId via externalPartyId]`（外部渠道才有 ` via ...`）。
+  // 这里必须对称地只取 canonicalId——否则带 " via wechat:clawbot:..." 的复合串会污染 senderId，
+  // 使 getRecentConversation(WHERE from_id=?) 永远查空、conversationWindow 丢失逐字历史。
+  const rawId = match ? match[1] : null
   return {
     isTick: false,
-    senderId: match ? match[1] : null,
+    senderId: rawId ? rawId.split(/\s+via\s+/i)[0].trim() : null,
     messageBody: match ? match[2].trim() : message,
   }
 }

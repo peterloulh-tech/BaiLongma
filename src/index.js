@@ -32,6 +32,7 @@ import { loadInstalledTools } from './capabilities/marketplace/index.js'
 import { resumePendingVideoJobs, getAIVideoPanelState } from './capabilities/tools/media.js'
 import { dispatchSocialMessage } from './social/dispatch.js'
 import { startSocialConnectors } from './social/index.js'
+import { getFeishuStatusBlock } from './social/feishu-ws.js'
 import { collectSystemInfo, getSystemInfoBlock, getBatteryBlock, getDesktopPath } from './system-info.js'
 import { collectDesktopInfo, getDesktopBlock } from './desktop-scanner.js'
 import { collectInstalledSoftware, getInstalledSoftwareBlock } from './installed-software-scanner.js'
@@ -825,6 +826,9 @@ function buildSystemEnv(msg) {
     blocks.push(getInstalledSoftwareBlock())
   if (/天气|气温|温度|下雨|下雪|晴天|气候|风力|风速|台风|位置|城市|在哪个城市/.test(text))
     blocks.push(getGeoWeatherBlock())
+  // 飞书：注入实时连接状态，避免 Agent 在「是不是连上了」上瞎猜、误报未连接。
+  if (/飞书|feishu|lark/.test(text))
+    blocks.push(getFeishuStatusBlock())
   // 热点不再按关键词预喂热搜数据：是否取数/开面板交由 Agent 调 hotspot_mode 自决（见 prompt Hotspot Panel 规则）。
   return blocks.filter(Boolean).join('\n\n')
 }
@@ -1023,9 +1027,8 @@ async function runTurn(input, label, msg = null) {
     if (fastUserPath) {
       directions.unshift('Current turn is a real-time external user message. Understand it quickly and reply directly with send_message. If no slow tool is needed, send exactly one final answer and stop. Use heavier tools only when the reply depends on them. During longer execution, send progress only for meaningful new findings or blockers; do not send an acknowledgement and then a near-duplicate final answer.')
     }
-    if (!isTick && isSoftwareInstallRequest(input)) {
-      directions.unshift('Software install workflow: first use injected installed-software context to see whether the app is already installed. If installation is still needed, call install_software first. install_software starts a background job and normally returns immediately with status="started" and job_id; this only means the job began, not that the app is installed. After a started result, tell the user briefly that installation is running in the background and stop the round. Do not call install_software again for the same app, do not poll repeatedly, and do not claim success until a later background APP_SIGNAL/list_processes result says succeeded/already installed/current. Do not run raw winget commands with exec_command, do not browse vendor pages, and do not enumerate download URLs before install_software has returned a terminal structured failure. On Windows this tool owns the winget path, including candidate selection and stale-manifest fallback such as Tencent.QQ.NT before Tencent.QQ for QQ. Installs run silently by default (no installer-wizard clicks); pass silent=false only if the user wants to watch or click the installer UI. If the final job result reports all winget candidates failed or no candidates, explain that concrete result and only then use find_tool to load web/download tools for a targeted official fallback if the user still wants it.')
-    }
+    // 软件安装工作流已收敛为 software-install 能力的 context，统一经 buildSystemPrompt 注入
+    //   （见 capabilities/capability-registry.js）。此处不再以 direction 重复注入同一份文本。
     if (isVoiceChannel(msg?.channel)) {
       directions.push('Voice mode: answer with judgment and meaning first. Do not read out an inventory. If details are merely evidence, compress them into the situation they prove.')
       directions.push('Voice mode style: speak like a person in the room. Default to one or two short sentences. No Markdown, no bullets, no headings, no process acknowledgement, no repeated summary. Say the situation, then stop.')

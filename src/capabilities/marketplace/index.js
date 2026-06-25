@@ -26,7 +26,7 @@ const BUILTIN_NAMES = new Set([
   'manage_rule', 'focus_banner',
   'set_location', 'delegate_to_agent', 'grant_agent_delegation', 'recall_memory',
   'complete_startup_self_check', 'set_task', 'complete_task', 'update_task_step',
-  'install_tool', 'uninstall_tool', 'list_tools', 'manage_tool_factory', 'set_security', 'connect_wechat',
+  'install_tool', 'uninstall_tool', 'list_tools', 'manage_tool_factory', 'set_security', 'connect_wechat', 'connect_feishu',
 ])
 
 function ensureToolsDir() {
