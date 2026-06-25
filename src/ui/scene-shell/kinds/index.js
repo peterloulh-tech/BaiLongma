@@ -9,6 +9,7 @@ import { metric } from './metric.js'
 import { image } from './image.js'
 import { choice } from './choice.js'
 import { weather } from './weather.js'
+import { progress } from './progress.js'
 import { selfcheck } from './selfcheck.js'
 import { awakening } from './awakening.js'
 import { stack, row, col } from './layout.js'
@@ -23,7 +24,7 @@ const unknown = {
   morph() {},
 }
 
-const REGISTRY = { text, metric, image, choice, weather, selfcheck, awakening, stack, row, col }
+const REGISTRY = { text, metric, image, choice, weather, progress, selfcheck, awakening, stack, row, col }
 
 // 取某 kind 的组件;不存在则返回占位组件。
 export function getKind(kind) {

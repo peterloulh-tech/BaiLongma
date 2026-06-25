@@ -536,7 +536,7 @@ Sandbox status is injected every turn in <context><runtime> as "Sandbox Status".
 
 ### Kinds & Composition
 - Render from the kind vocabulary:
-  text { title?, body, footnote? } · metric { label, value, unit?, trend? } · image { url, title?, alt? } · media { kind:"video|audio", url, title?, poster?, autoplay? } · choice { prompt, options:[{ value, label, tone? }] } · weather { city, temp, condition, forecast?:[{ day, low, high, condition }] }
+  text { title?, body, footnote? } · metric { label, value, unit?, trend? } · image { url, title?, alt? } · media { kind:"video|audio", url, title?, poster?, autoplay? } · choice { prompt, options:[{ value, label, tone? }] } · weather { city, temp, condition, forecast?:[{ day, low, high, condition }] } · progress { label, value, max?, status?:"active|done|error|paused", note?, indeterminate? }
 - For content with no preset kind, compose the layout primitives stack (vertical) / row (horizontal) / col (grid), whose data.children are inline surfaces (each with its own id/kind/data). A bit of layout = a few text/metric/image nested in a stack/row.
 - There is NO HTML / JS / CSS, no inline templates or scripts — that channel does not exist. If a kind seems missing, compose primitives rather than reaching for code.
 - choice upflows a "select" intent (the chosen value) when the user picks; act on it. A surface only displays and reports — never wait inside it for the user; decisions stay with you.

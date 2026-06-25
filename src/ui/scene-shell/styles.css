@@ -204,6 +204,34 @@
 .w-fc-ico { font-size: 22px; }
 .w-fc-temp { font-size: 13px; }
 
+/* ── kind: progress ─────────────────────────────────────────────────── */
+.k-progress { min-width: 280px; }
+.pr-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.pr-label { font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-pct { font-size: 15px; font-weight: 700; color: var(--text-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.pr-track { height: 8px; border-radius: 6px; background: rgba(154, 167, 184, 0.16); overflow: hidden; }
+.pr-fill {
+  height: 100%; width: 0; border-radius: 6px; background: var(--accent);
+  /* width 过渡是 morph 的灵魂:value 一变,进度条平滑推进。 */
+  transition: width var(--dur-morph) var(--ease-mo), background 280ms var(--ease-mo);
+}
+.pr-note { font-size: 13px; color: var(--text-dim); margin-top: 10px; }
+/* 状态色 */
+.k-progress.is-done .pr-fill { background: var(--good); }
+.k-progress.is-done .pr-pct { color: var(--good); }
+.k-progress.is-error .pr-fill { background: var(--danger); }
+.k-progress.is-error .pr-pct { color: var(--danger); }
+.k-progress.is-paused .pr-fill { background: var(--text-dim); }
+/* 不定量:进度未知,用一段来回滑动的条表示"进行中"(忽略 width)。 */
+.k-progress.is-indeterminate .pr-fill {
+  width: 35% !important; transition: none;
+  animation: pr-indet 1.4s ease-in-out infinite;
+}
+@keyframes pr-indet {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(340%); }
+}
+
 /* ── kind: selfcheck ────────────────────────────────────────────────── */
 .k-selfcheck { min-width: 248px; }
 .sc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }

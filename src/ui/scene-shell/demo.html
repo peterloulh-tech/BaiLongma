@@ -167,7 +167,31 @@
         ],
       },
       {
-        note: '⑭ 全部 exit:清空舞台',
+        note: '⑭ progress enter:进度条从 0 填到 18%(长出来,不是凭空出现)',
+        surfaces: [
+          S('dl', 'progress', { label: '下载模型 deepseek-v4', value: 18, note: '2 / 11 文件' }),
+        ],
+      },
+      {
+        note: '⑮ progress morph:18% → 76%(进度条平滑推进 + 百分比翻动,同一元素在动)',
+        surfaces: [
+          S('dl', 'progress', { label: '下载模型 deepseek-v4', value: 76, note: '8 / 11 文件' }),
+        ],
+      },
+      {
+        note: '⑯ progress morph:76% → 100% done(满进度推断为 done,进度条转绿)',
+        surfaces: [
+          S('dl', 'progress', { label: '下载模型 deepseek-v4', value: 100, status: 'done', note: '11 / 11 文件 · 完成' }),
+        ],
+      },
+      {
+        note: '⑰ progress 不定量:进度未知 → 滑动条(忽略 value)',
+        surfaces: [
+          S('dl', 'progress', { label: '正在连接镜像源…', indeterminate: true, note: 'hf-mirror.com' }),
+        ],
+      },
+      {
+        note: '⑱ 全部 exit:清空舞台',
         surfaces: [],
       },
     ]
