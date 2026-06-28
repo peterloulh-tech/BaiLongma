@@ -30,6 +30,7 @@ import { getWorldcup, setWorldcupPanelState, getWorldcupPanelState } from './wor
 import { getPersonCard, setPersonCardPanelState, getPersonCardPanelState } from './person-cards.js'
 import { setDocPanelState, getDocPanelState, DOC_TOPICS } from './docs.js'
 import { getTraces, getTrace, clearTraces, getTraceStatus } from './runtime/turn-trace.js'
+import { getTerminalStreamSnapshot } from './terminal-stream.js'
 
 export { emitEvent }
 
@@ -44,6 +45,7 @@ const ACTIVATION_PATH    = paths.activationHtml
 const TURN_TRACE_PATH    = paths.turnTraceHtml
 const BRAIN_UI_ASSET_ROOT = paths.brainUiAssetRoot
 const SCENE_SHELL_ASSET_ROOT = path.join(paths.resourcesDir, 'src', 'ui', 'scene-shell')
+const TERMINAL_STREAM_PATH = path.join(paths.resourcesDir, 'src', 'ui', 'terminal-stream', 'index.html')
 const D3_VENDOR_PATH     = path.join(paths.resourcesDir, 'node_modules', 'd3', 'dist', 'd3.min.js')
 const SANDBOX_PATH       = paths.sandboxDir
 const DEFAULT_AGENT_NAME = '小白龙'
@@ -406,6 +408,12 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         clearInterval(keepAlive)
         removeSSEClient(res)
       })
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/terminal-stream/history') {
+      const streamId = url.searchParams.get('stream_id') || 'default'
+      jsonResponse(res, 200, getTerminalStreamSnapshot(streamId))
       return
     }
 
@@ -1357,6 +1365,18 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       } catch {
         res.writeHead(404)
         res.end('brain-ui.html not found')
+      }
+      return
+    }
+
+    if (req.method === 'GET' && (url.pathname === '/terminal-stream' || url.pathname === '/terminal-stream.html')) {
+      try {
+        const html = fs.readFileSync(TERMINAL_STREAM_PATH, 'utf-8')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(html)
+      } catch {
+        res.writeHead(404)
+        res.end('terminal-stream.html not found')
       }
       return
     }

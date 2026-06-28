@@ -71,6 +71,7 @@ const STARTUP_SELF_CHECK_TOOLS = [
 ]
 const PERSON_CARD_TOOLS = ['person_card_mode']
 const FOCUS_BANNER_TOOLS = ['focus_banner']
+const TERMINAL_STREAM_TOOLS = ['terminal_stream']
 const ADMIN_TOOLS       = [
   'manage_tool_factory', 'install_tool', 'uninstall_tool', 'list_tools',
   'set_security', 'connect_wechat', 'connect_feishu',
@@ -141,6 +142,12 @@ const FOCUS_BANNER_TRIGGERS = [
   'focus mode', 'banner', 'do not disturb', 'dnd', 'immersive',
 ]
 
+const TERMINAL_STREAM_TRIGGERS = [
+  '行动可视化', '文本流', '命令行窗口', '终端窗口', '黑底白字', '写文件过程', '写入过程',
+  'terminal stream', 'terminal window', 'command line window', 'progress stream',
+  'visible progress', 'show progress', 'work log window',
+]
+
 const ADMIN_TRIGGERS = [
   '装一下', '安装', '装个', '卸载', '装好', '装上', '工具市场', '插件',
   '自写工具', '自己写工具', '工具工厂', '工具审核', '生成工具', '注册工具',
@@ -203,6 +210,7 @@ export const TOOL_GROUPS = [
   { triggers: TICKER_TRIGGERS,       tools: TICKER_TOOLS },
   { triggers: PERSON_CARD_TRIGGERS,  tools: PERSON_CARD_TOOLS },
   { triggers: FOCUS_BANNER_TRIGGERS, tools: FOCUS_BANNER_TOOLS },
+  { triggers: TERMINAL_STREAM_TRIGGERS, tools: TERMINAL_STREAM_TOOLS },
   { triggers: ADMIN_TRIGGERS,        tools: ADMIN_TOOLS },
   { triggers: TTS_TRIGGERS,          tools: [MM_GEN_TOOLS.tts] },
   { triggers: LYRICS_TRIGGERS,       tools: [MM_GEN_TOOLS.lyrics] },
@@ -359,6 +367,9 @@ export function selectTools(ctx = {}) {
   }
   if (hits(body, FOCUS_BANNER_TRIGGERS) || hasTask) {
     for (const t of FOCUS_BANNER_TOOLS) out.add(t)
+  }
+  if (hits(body, TERMINAL_STREAM_TRIGGERS)) {
+    for (const t of TERMINAL_STREAM_TOOLS) out.add(t)
   }
   if (hits(body, ADMIN_TRIGGERS)) {
     for (const t of ADMIN_TOOLS) out.add(t)

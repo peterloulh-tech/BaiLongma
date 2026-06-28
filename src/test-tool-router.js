@@ -299,6 +299,17 @@ function hasNone(tools, names) {
     `14d) talking about the feature itself → person_card_mode NOT injected (got: ${tools.join(',')})`)
 }
 
+// ====== 14e) Terminal stream / progress window ======
+{
+  const tools = selectTools({
+    messageBody: 'please show a terminal stream progress window while writing files',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'terminal_stream'),
+    `14e) terminal stream intent -> terminal_stream injected (got: ${tools.join(',')})`)
+}
+
 // ====== 15) RECALL 路径 ======
 {
   const tools = selectTools({

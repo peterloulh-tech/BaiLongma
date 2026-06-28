@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bailongma Terminal Stream</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #050505;
+    --fg: #f4f4f4;
+    --muted: #8d8d8d;
+    --border: #242424;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+    overflow: hidden;
+  }
+
+  .terminal {
+    display: grid;
+    grid-template-rows: 38px 1fr;
+    width: 100vw;
+    height: 100vh;
+    background: var(--bg);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 38px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg);
+    user-select: none;
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+
+  .dot.live {
+    background: #ffffff;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+  }
+
+  .title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .status {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  pre {
+    margin: 0;
+    padding: 16px 18px 28px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.45;
+    font-size: 14px;
+    tab-size: 2;
+  }
+
+  .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1em;
+    margin-left: 2px;
+    background: var(--fg);
+    vertical-align: -2px;
+    animation: blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<main class="terminal">
+  <header class="bar">
+    <span id="dot" class="dot"></span>
+    <span id="title" class="title">Bailongma Terminal Stream</span>
+    <span id="status" class="status">connecting</span>
+  </header>
+  <pre id="screen"></pre>
+</main>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const streamId = params.get("stream_id") || "default";
+  const screen = document.getElementById("screen");
+  const titleEl = document.getElementById("title");
+  const statusEl = document.getElementById("status");
+  const dotEl = document.getElementById("dot");
+  let cursor = null;
+
+  function setStatus(text, live) {
+    statusEl.textContent = text;
+    dotEl.classList.toggle("live", !!live);
+  }
+
+  function ensureCursor() {
+    if (!cursor) {
+      cursor = document.createElement("span");
+      cursor.className = "cursor";
+    }
+    if (cursor.parentNode !== screen) screen.appendChild(cursor);
+  }
+
+  function scrollBottom() {
+    screen.scrollTop = screen.scrollHeight;
+  }
+
+  function appendText(text, newline) {
+    if (cursor && cursor.parentNode) cursor.remove();
+    screen.appendChild(document.createTextNode(String(text || "")));
+    if (newline !== false) screen.appendChild(document.createTextNode("\n"));
+    ensureCursor();
+    scrollBottom();
+  }
+
+  function clearScreen() {
+    screen.textContent = "";
+    cursor = null;
+    ensureCursor();
+  }
+
+  function applyEvent(data) {
+    if (!data || data.stream_id !== streamId) return;
+    if (data.title) {
+      titleEl.textContent = data.title;
+      document.title = data.title;
+    }
+    if (data.action === "clear") {
+      clearScreen();
+      return;
+    }
+    if (data.action === "write") {
+      appendText(data.text || "", data.newline);
+      return;
+    }
+    if (data.action === "close") {
+      setStatus("closed", false);
+      appendText("[stream closed]", true);
+      return;
+    }
+    if (data.action === "open") {
+      setStatus("live", true);
+      ensureCursor();
+    }
+  }
+
+  async function hydrate() {
+    try {
+      const res = await fetch(`/terminal-stream/history?stream_id=${encodeURIComponent(streamId)}`, { cache: "no-store" });
+      const data = await res.json();
+      if (data.title) {
+        titleEl.textContent = data.title;
+        document.title = data.title;
+      }
+      clearScreen();
+      for (const chunk of data.chunks || []) {
+        appendText(chunk.text || "", chunk.newline);
+      }
+      setStatus(data.closed ? "closed" : "live", !data.closed);
+    } catch (err) {
+      clearScreen();
+      appendText(`[history unavailable] ${err.message || err}`, true);
+      setStatus("offline", false);
+    }
+  }
+
+  function connectEvents() {
+    const source = new EventSource("/events");
+    source.onopen = () => setStatus("live", true);
+    source.onerror = () => setStatus("reconnecting", false);
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data || "{}");
+        if (payload.type === "terminal_stream") applyEvent(payload.data);
+      } catch {}
+    };
+  }
+
+  hydrate().then(connectEvents);
+})();
+</script>
+</body>
+</html>

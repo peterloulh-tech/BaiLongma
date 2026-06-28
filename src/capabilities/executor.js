@@ -4,6 +4,8 @@ import path from 'path'
 import { nowTimestamp } from '../time.js'
 import { normalizeConversationPartyId, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertConversation, setConfig as dbSetConfig, markConversationOpenQuestion, findRecentJarvisDuplicate, getRecentActionLogs } from '../db.js'
 import { emitEvent, setStickyEvent } from '../events.js'
+import { getTerminalStreamSnapshot, recordTerminalStreamEvent } from '../terminal-stream.js'
+import { streamToolFileWriteExecutionPreview } from '../write-file-preview.js'
 import { dispatchSocialMessage } from '../social/dispatch.js'
 import { setCustomInterval as setTickerInterval, getStatus as getTickerStatus } from '../ticker.js'
 import { setHotspotPanelState, getHotspotPanelState } from '../hotspots.js'
@@ -164,6 +166,19 @@ function makeSocialPayload(text, media) {
 }
 
 // 工具执行器：根据工具名和参数执行对应操作，返回结果字符串
+function inferFileWritePreviewOutcome(result = '') {
+  try {
+    const parsed = JSON.parse(String(result || ''))
+    if (parsed && typeof parsed === 'object') {
+      const bytes = parsed.bytes ?? parsed.size ?? parsed.length
+      const ok = parsed.ok
+      const verified = parsed.verified ?? (ok === undefined ? true : ok !== false)
+      return { bytes, verified }
+    }
+  } catch {}
+  return { verified: true }
+}
+
 async function executeToolUnchecked(name, args, context = {}) {
   try {
     throwIfAborted(context.signal)
@@ -255,6 +270,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execUISet(args)
       case 'focus_banner':
         return execFocusBanner(args)
+      case 'terminal_stream':
+        return execTerminalStream(args)
       case 'voice_retire':
         return execVoiceRetire(args)
       case 'set_location':
@@ -297,7 +314,10 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execSetSecurity(args)
       default:
         if (isInstalledTool(name)) {
-          return await executeInstalledTool(name, args)
+          const previewed = streamToolFileWriteExecutionPreview(name, args)
+          const result = await executeInstalledTool(name, args)
+          if (previewed) streamToolFileWriteExecutionPreview(name, args, inferFileWritePreviewOutcome(result))
+          return result
         }
         return `错误：未知工具 "${name}"`
     }
@@ -984,6 +1004,64 @@ function execFocusBanner({ action, task = '', current_step = '', tasks = [] }) {
 
 // 收起悬浮语音球：发 SSE 事件给渲染层(voice-wake.js)，由它在说完话后播退场动画收起。
 // 只退场屏幕上的球，不停 app、不影响可达性。无球在场时渲染层自动忽略（幂等）。
+function execTerminalStream({
+  action = 'write',
+  text = '',
+  stream_id = 'default',
+  title = 'Bailongma Terminal Stream',
+  newline = true,
+  level = 'info',
+} = {}) {
+  const normalizedAction = String(action || 'write').trim().toLowerCase()
+  if (!['open', 'write', 'clear', 'close', 'status'].includes(normalizedAction)) {
+    return toolJson({ ok: false, error: 'action must be open, write, clear, close, or status' })
+  }
+
+  const bridge = global.terminalStreamBridge
+  const streamId = String(stream_id || 'default').trim() || 'default'
+  const cleanTitle = String(title || 'Bailongma Terminal Stream').trim() || 'Bailongma Terminal Stream'
+
+  if (normalizedAction === 'status') {
+    const snapshot = getTerminalStreamSnapshot(streamId)
+    return toolJson({
+      ok: true,
+      tool: 'terminal_stream',
+      action: 'status',
+      stream_id: snapshot.stream_id,
+      title: snapshot.title,
+      closed: snapshot.closed,
+      chunks: snapshot.chunks.length,
+      window_available: !!bridge,
+    })
+  }
+
+  if (bridge && ['open', 'write', 'clear'].includes(normalizedAction)) {
+    bridge.emit('open', { title: cleanTitle, stream_id: streamId })
+  } else if (bridge && normalizedAction === 'close') {
+    bridge.emit('close', { stream_id: streamId })
+  }
+
+  const snapshot = recordTerminalStreamEvent({
+    action: normalizedAction,
+    stream_id: streamId,
+    title: cleanTitle,
+    text,
+    newline,
+    level,
+  })
+
+  return toolJson({
+    ok: true,
+    tool: 'terminal_stream',
+    action: normalizedAction,
+    stream_id: snapshot.stream_id,
+    title: snapshot.title,
+    closed: snapshot.closed,
+    chunks: snapshot.chunks.length,
+    window_available: !!bridge,
+  })
+}
+
 function execVoiceRetire({ reason = '' } = {}) {
   emitEvent('voice_retire', { reason: typeof reason === 'string' ? reason : '' })
   return toolJson({ ok: true, tool: 'voice_retire', retired: true, reason: String(reason || '') })

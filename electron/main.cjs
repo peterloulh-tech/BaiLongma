@@ -134,12 +134,16 @@ let mainWindow = null
 let backendPort = 0
 let tray = null
 let focusBannerWindow = null
+let terminalStreamWindow = null
+let terminalStreamWindowStreamId = null
 let wakeProbeWindow = null
 let voiceOrbWindow = null
 
 // 后端通过 global.focusBannerBridge 控制横幅窗口
 const focusBannerBridge = new EventEmitter()
 global.focusBannerBridge = focusBannerBridge
+const terminalStreamBridge = new EventEmitter()
+global.terminalStreamBridge = terminalStreamBridge
 global.bailongmaAppControl = {
   restart() {
     console.log('[main] restart requested')
@@ -443,6 +447,58 @@ focusBannerBridge.on('hide', () => {
 // ─── 语音唤醒:隐藏"耳朵"窗口 + 主进程 KWS ───
 // 隐藏窗口常开麦克风 → AudioWorklet 出 16kHz Float32 → IPC → 主进程 KeywordSpotter。
 // 第一步只检测+写日志(USER_DIR/logs/wake-word.log),命中"白龙马"不做其他动作。
+function createTerminalStreamWindow({ title = 'Bailongma Terminal Stream', stream_id = 'default' } = {}) {
+  const cleanTitle = String(title || 'Bailongma Terminal Stream').slice(0, 120)
+  const streamId = String(stream_id || 'default').replace(/[^a-zA-Z0-9_.:-]+/g, '_').slice(0, 80) || 'default'
+  const url = `http://127.0.0.1:${backendPort}/terminal-stream?stream_id=${encodeURIComponent(streamId)}`
+
+  if (terminalStreamWindow && !terminalStreamWindow.isDestroyed()) {
+    terminalStreamWindow.setTitle(cleanTitle)
+    if (terminalStreamWindowStreamId !== streamId) {
+      terminalStreamWindowStreamId = streamId
+      terminalStreamWindow.loadURL(url)
+    }
+    if (terminalStreamWindow.isMinimized()) terminalStreamWindow.restore()
+    terminalStreamWindow.show()
+    terminalStreamWindow.focus()
+    return
+  }
+
+  terminalStreamWindow = new BrowserWindow({
+    width: 920,
+    height: 540,
+    minWidth: 520,
+    minHeight: 300,
+    backgroundColor: '#050505',
+    title: cleanTitle,
+    icon: getAppIconPath(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  })
+
+  terminalStreamWindowStreamId = streamId
+  terminalStreamWindow.loadURL(url)
+  terminalStreamWindow.on('closed', () => {
+    terminalStreamWindow = null
+    terminalStreamWindowStreamId = null
+  })
+}
+
+terminalStreamBridge.on('open', (payload = {}) => {
+  createTerminalStreamWindow(payload)
+})
+
+terminalStreamBridge.on('close', () => {
+  if (terminalStreamWindow && !terminalStreamWindow.isDestroyed()) {
+    terminalStreamWindow.close()
+    terminalStreamWindow = null
+    terminalStreamWindowStreamId = null
+  }
+})
+
 function createWakeProbeWindow() {
   if (wakeProbeWindow && !wakeProbeWindow.isDestroyed()) return
   wakeProbeWindow = new BrowserWindow({

@@ -122,6 +122,46 @@ export const uiSchemas = {
     }
   },
 
+  terminal_stream: {
+    type: 'function',
+    function: {
+      name: 'terminal_stream',
+      description: 'Open and write to a separate terminal-style progress window (black background, monospace text). Use it for visible work logs, especially before/during file writing or artifact generation, so the user can see progress without waiting in Brain UI. This is not the final user reply; write short factual progress lines.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['open', 'write', 'clear', 'close', 'status'],
+            description: 'open shows the terminal window; write appends text; clear clears the stream; close closes the window; status checks current stream state.'
+          },
+          text: {
+            type: 'string',
+            description: 'Text to append when action=write. Keep it short and factual, like a terminal progress line.'
+          },
+          stream_id: {
+            type: 'string',
+            description: 'Optional stream identity. Default is "default". Reuse the same id for one continuous work session.'
+          },
+          title: {
+            type: 'string',
+            description: 'Optional terminal window title, e.g. "Writing project files".'
+          },
+          newline: {
+            type: 'boolean',
+            description: 'When action=write, append a newline after text. Defaults to true.'
+          },
+          level: {
+            type: 'string',
+            enum: ['info', 'success', 'warning', 'error', 'muted'],
+            description: 'Optional semantic level for future renderers. Current terminal keeps a simple black/white look.'
+          },
+        },
+        required: ['action']
+      }
+    }
+  },
+
   voice_retire: {
     type: 'function',
     function: {

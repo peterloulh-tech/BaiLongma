@@ -9,6 +9,7 @@ import { sanitizeAssistantReplyForDelivery, createAssistantReplyStreamSanitizer 
 import { beginTurn } from './runtime/turn-trace.js'
 import { createMergedAbortSignal } from './capabilities/abort-utils.js'
 import { filterStrictEvaluationTools, isToolForbiddenInStrictEvaluation, makeStrictForbiddenToolResult } from './runtime/strict-evaluation.js'
+import { streamWriteFileArgumentPreview, streamXmlFileWriteArgumentPreview } from './write-file-preview.js'
 
 // 单轮流式调用的「空闲超时」：从开始到第一个 token、以及每两个 token 之间，
 // 若超过这个时长没有任何增量到达，判定为 provider 连接卡死（连接开着却不吐字节）。
@@ -162,6 +163,9 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
   let fullContent = ''
   let fullReasoningContent = ''
   let toolCallsMap = {}
+  const writeFilePreviewStates = new Map()
+  const writeFilePreviewSession = { cleared: false }
+  const xmlWriteFilePreviewState = { session: writeFilePreviewSession }
   let inThink = false
   let thinkDone = false
   let streamStarted = false
@@ -221,6 +225,9 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
           }
         }
         if (tc.function?.arguments) toolCallsMap[idx].arguments += tc.function.arguments
+        const previewState = writeFilePreviewStates.get(idx) || {}
+        previewState.session ||= writeFilePreviewSession
+        writeFilePreviewStates.set(idx, streamWriteFileArgumentPreview(toolCallsMap[idx], previewState))
       }
       continue
     }
@@ -249,6 +256,7 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
     }
 
     fullContent += text
+    streamXmlFileWriteArgumentPreview(fullContent, xmlWriteFilePreviewState)
 
     // 解析 <think> 标签流式推送
     if (!thinkDone) {
