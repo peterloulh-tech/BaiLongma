@@ -52,6 +52,8 @@ import { extractVerbatimPayload, findRecentVerbatimPayload, hasInlineVerbatimPay
 import { refreshUserProfile } from './profile/infer.js'
 import { isSoftwareInstallRequest } from './software-install-intent.js'
 import { formatTerminalStreamContext } from './terminal-stream.js'
+import { getWeatherCardProps, isWeatherQuery } from './weather.js'
+import { scheduleSceneSurfaceRemoval } from './scene/transient-surfaces.js'
 
 // On first launch, copy sandbox seed files from the resource directory to the user data directory (Electron install)
 seedSandboxOnce()
@@ -826,13 +828,64 @@ function buildSystemEnv(msg) {
     blocks.push(getDesktopBlock())
   if (isSoftwareInstallRequest(text) || /软件|应用|程序|客户端|工具|装了什么|用了什么|代理|科学上网|翻墙|\bvpn\b|\bproxy\b|clash|mihomo|v2ray|xray|sing-?box|shadowrocket|shadowsocks|wireguard|tailscale|zerotier|openvpn/.test(text))
     blocks.push(getInstalledSoftwareBlock())
-  if (/天气|气温|温度|下雨|下雪|晴天|气候|风力|风速|台风|位置|城市|在哪个城市/.test(text))
+  if (/位置|在哪个城市/.test(text))
     blocks.push(getGeoWeatherBlock())
   // 飞书：注入实时连接状态，避免 Agent 在「是不是连上了」上瞎猜、误报未连接。
   if (/飞书|feishu|lark/.test(text))
     blocks.push(getFeishuStatusBlock())
   // 热点不再按关键词预喂热搜数据：是否取数/开面板交由 Agent 调 hotspot_mode 自决（见 prompt Hotspot Panel 规则）。
   return blocks.filter(Boolean).join('\n\n')
+}
+
+function weatherSurfaceId(city = '') {
+  const slug = String(city || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+  return `weather-${slug || 'local'}`
+}
+
+function normalizeWeatherSurfaceData(cardProps = {}) {
+  const forecast = Array.isArray(cardProps.forecast)
+    ? cardProps.forecast.map(f => ({
+      day: f.day || '',
+      low: f.low,
+      high: f.high,
+      condition: f.condition || '',
+    }))
+    : []
+  return {
+    city: cardProps.city || '当前位置',
+    temp: cardProps.temp,
+    condition: cardProps.condition || '',
+    forecast,
+  }
+}
+
+async function projectWeatherSurfaceForTurn(message = '') {
+  if (!isWeatherQuery(message)) return null
+
+  const cardProps = await getWeatherCardProps(message)
+  if (!cardProps) return null
+
+  const data = normalizeWeatherSurfaceData(cardProps)
+  const id = weatherSurfaceId(data.city)
+  const changed = sceneStore.set(id, {
+    kind: 'weather',
+    data,
+    intent: 'ambient',
+  })
+  scheduleSceneSurfaceRemoval(id, { kind: 'weather' })
+  if (changed) {
+    emitEvent('action', {
+      tool: 'weather_surface',
+      summary: '已显示天气卡片',
+      detail: data.city,
+    })
+  }
+  return { id, data, changed }
 }
 
 async function runTurn(input, label, msg = null) {
@@ -896,8 +949,8 @@ async function runTurn(input, label, msg = null) {
       }
     }
 
-    // 天气不再走"绕开 LLM 的快速路径"：交回 LLM，由 Agent 依 prompt 的 "Weather Surface Rules"
-    //   自行 fetch_url(wttr.in) + ui_set(weather kind)。决策归 Agent，不再由 isWeatherQuery 正则代办整轮。
+    // 天气不走"绕开 LLM 的快速回复"：仍交回 LLM 回答。
+    // 但天气 surface 是确定性 UI 能力,不能完全依赖模型是否记得调用 ui_set。
 
     // 1. Injector
     const injection = await runInjector({ message: input, state })
@@ -1050,7 +1103,7 @@ async function runTurn(input, label, msg = null) {
 
     // Real-time user messages take the fast path: skip heavy context gathering to avoid slowdowns from task background.
     const prefetchText = formatPrefetchedItems(injection.prefetchedItems)
-    const runtimeInjection = await runRuntimeInjector({
+    const runtimeInjectionPromise = runRuntimeInjector({
       message: msg?.content || input,
       task: state.task,
       taskKnowledge: taskKnowledgeText,
@@ -1058,11 +1111,14 @@ async function runTurn(input, label, msg = null) {
       fastUserPath,
       signal: controller.signal,
     })
+    const weatherSurfacePromise = (!isTick && msg && !silentSignal)
+      ? projectWeatherSurfaceForTurn(msg.content || input)
+      : Promise.resolve(null)
+    const [runtimeInjection] = await Promise.all([runtimeInjectionPromise, weatherSurfacePromise])
     throwIfAborted(controller.signal)
 
-    // 注：旧版在此硬编码自动弹一张 ACUI WeatherCard，且另有一条绕开 LLM 的天气快速路径。
-    //   两者均已删除——天气统一走 LLM 回合，Agent 依 prompt 的 "Weather Surface Rules"
-    //   自行 fetch_url(wttr.in) + ui_set(weather kind)，决策完全归 Agent。
+    // 天气卡片投影与 runRuntimeInjector 并发;显式城市天气共用 in-flight wttr.in 请求。
+    // 不使用启动期 IP geo-weather 作为天气卡兜底,避免 VPN 出口城市污染结果。
 
     // 用户跨渠道可达性快照（让 L2 主动消息能选对渠道：用户在外面就发微信，在电脑前就发本地）
     const presenceText = formatPresenceForPrompt(PRIMARY_USER_ID)

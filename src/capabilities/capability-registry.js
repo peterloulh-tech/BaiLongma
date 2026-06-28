@@ -70,6 +70,7 @@ const WEATHER_CONTEXT_BLOCK = `### Weather Surface Rules
   - condition  <- current_condition[0].lang_zh[0].value or weatherDesc[0].value
   - forecast   <- three items from weather[0..2], each { day:"今天"/"明天"/"后天", low: mintempC, high: maxtempC, condition }
 - Call: ui_set({ id: "weather-<city>", kind: "weather", data: { city, temp, condition, forecast }, intent: "ambient" })
+- If a matching weather surface is already listed in Supplemental Context, do not call ui_set again unless the user asks to refresh or the surface data is clearly missing.
 - To refresh, call ui_set again with the same id.`
 
 const HOTSPOT_CONTEXT_BLOCK = `### Hotspot Panel

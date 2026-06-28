@@ -6,6 +6,7 @@
 
 import { sceneStore } from '../../scene/scene-store.js'
 import { sceneClientCount } from '../../scene/scene-server.js'
+import { cancelSceneSurfaceRemoval, scheduleSceneSurfaceRemoval } from '../../scene/transient-surfaces.js'
 
 export function execUISet({ id, kind, data, intent, focus, order, remove } = {}) {
   if (!id || typeof id !== 'string') {
@@ -14,6 +15,7 @@ export function execUISet({ id, kind, data, intent, focus, order, remove } = {})
 
   // 移除
   if (remove === true) {
+    cancelSceneSurfaceRemoval(id)
     const changed = sceneStore.set(id, null)
     return changed ? `已移除 surface "${id}"。` : `surface "${id}" 本就不存在,无变化。`
   }
@@ -24,6 +26,7 @@ export function execUISet({ id, kind, data, intent, focus, order, remove } = {})
 
   try {
     const changed = sceneStore.set(id, { kind, data, intent, focus, order })
+    if (kind === 'weather') scheduleSceneSurfaceRemoval(id, { kind: 'weather' })
     const where = sceneClientCount() > 0 ? '' : '(当前没有已连接的界面,状态已记录,界面连上后会自动同步)'
     if (!changed) return `surface "${id}" 内容未变化(幂等,无需重复推送)。${where}`
     return `已设置 surface "${id}"(kind=${kind}${intent ? `, intent=${intent}` : ''})。${where}`
