@@ -53,6 +53,9 @@ const TOOL_RISK = {
   generate_music: 'high',
   generate_image: 'high',
   generate_video: 'high',
+  run_api_capability: 'high',
+  analyze_image: 'high',
+  manage_api_capability: 'high',
   set_security: 'high',
 }
 export function classifyTool(name) {

@@ -27,6 +27,7 @@ const BUILTIN_NAMES = new Set([
   'set_location', 'delegate_to_agent', 'grant_agent_delegation', 'recall_memory',
   'complete_startup_self_check', 'set_task', 'complete_task', 'update_task_step',
   'install_tool', 'uninstall_tool', 'list_tools', 'manage_tool_factory', 'set_security', 'connect_wechat', 'connect_feishu',
+  'run_api_capability', 'analyze_image', 'manage_api_capability',
 ])
 
 function ensureToolsDir() {

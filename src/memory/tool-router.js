@@ -79,6 +79,7 @@ const ADMIN_TOOLS       = [
   'manage_tool_factory', 'install_tool', 'uninstall_tool', 'list_tools',
   'set_security', 'connect_wechat', 'connect_feishu',
   'set_location', 'set_agent_name', 'manage_rule',
+  'manage_api_capability',
 ]
 
 // 多模态生成（按 mmCaps gate；关键词命中后才注入对应工具）
@@ -167,6 +168,9 @@ const ADMIN_TRIGGERS = [
   'connect ', 'location', 'rename', 'apps',
   '规则', '关键词规则', '上下文规则', '记忆注入',
   'rule', 'rules', 'context rule', 'keyword rule', 'memory injection',
+  '能力槽', 'api能力', 'api 能力', 'api文档', 'api 文档', '配置文档', '执行说明',
+  'kimi 识图', 'kimi识图', 'moonshot 识图', '视觉模型', '识图模型',
+  'capability slot', 'api capability', 'vision model',
 ]
 
 // 多模态生成专用触发（关键词必须足够具体——单字"说""画"在中文里太宽泛

@@ -43,7 +43,9 @@ export const paths = {
   // seedance（AI 视频生成）单独成文件，与主 config.json 物理隔离，
   // 避免被 activate() 等“全量覆盖写 config.json”的操作误删。
   seedanceConfigFile: path.join(USER_DIR, 'seedance.json'),
+  apiCapabilitySlotsFile: path.join(USER_DIR, 'api-capability-slots.json'),
   sandboxDir:         ensureDir(path.join(USER_DIR, 'sandbox')),
+  sandboxApiCapabilitiesDir: ensureDir(path.join(USER_DIR, 'sandbox', 'api-capabilities')),
   sandboxMusicDir:    ensureDir(path.join(USER_DIR, 'sandbox', 'music')),
   sandboxNotesDir:    ensureDir(path.join(USER_DIR, 'sandbox', 'notes')),
   sandboxDownloadsDir:ensureDir(path.join(USER_DIR, 'sandbox', 'downloads')),

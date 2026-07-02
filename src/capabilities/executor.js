@@ -34,6 +34,7 @@ import { execBrowserRead, execFetchUrl, execWebSearch } from './tools/web.js'
 import { execDowngradeMemory, execMergeMemories, execProbeMemory, execRecallMemory, execSearchMemory, execSkipConsolidation, execSkipRecognition, execUpsertMemory } from './tools/memory.js'
 import { execManageReminder } from './tools/reminders.js'
 import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
+import { execAnalyzeImage, execManageApiCapability, execRunApiCapability } from './tools/api-capability.js'
 import { execManageRule } from './tools/rules.js'
 import { runWorkReview } from '../review/reviewer.js'
 import { CAPABILITY_DEMO_INTRO, runCapabilityDemo } from '../capability-demo.js'
@@ -492,6 +493,12 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execListTools()
       case 'manage_tool_factory':
         return await execManageToolFactory(args)
+      case 'run_api_capability':
+        return await execRunApiCapability(args, context)
+      case 'analyze_image':
+        return await execAnalyzeImage(args, context)
+      case 'manage_api_capability':
+        return execManageApiCapability(args)
       case 'find_tool':
         return execFindTool(args)
       case 'connect_wechat':

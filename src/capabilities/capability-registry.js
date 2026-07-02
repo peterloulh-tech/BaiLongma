@@ -28,6 +28,7 @@ import { isSoftwareInstallRequest, SOFTWARE_INSTALL_TRIGGERS } from '../software
 import { buildHotspotRuntimeContext } from '../hotspots.js'
 import { buildWorldcupRuntimeContext } from '../worldcup.js'
 import { buildWeatherRuntimeContext } from '../weather.js'
+import { listApiSlotCapabilities } from './api-slots.js'
 
 // ---- 已迁能力的工具名数组（本模块为唯一定义处；tool-router 从这里 import）----
 export const WEB_TOOLS = ['web_search', 'fetch_url', 'browser_read']
@@ -176,16 +177,20 @@ const CAPABILITY_BY_ID = new Map(CAPABILITIES.map(c => [c.id, c]))
 
 // ---- 消费端 helpers ----
 
+function allCapabilities() {
+  return [...CAPABILITIES, ...listApiSlotCapabilities()]
+}
+
 // 领域相关的能力（detect 命中）——用于 context 注入与自感知「现在哪些能力在场」。
 export function selectActiveCapabilities(ctx = {}) {
-  return CAPABILITIES.filter(c => safeCall(c.detect, ctx))
+  return allCapabilities().filter(c => safeCall(c.detect, ctx))
 }
 
 // 本轮要自动注入的工具名（去重）。每能力用 toolWhen（缺省回落 detect）单独判断，
 // 保留 tools / context 解耦。
 export function capabilityToolsFor(ctx = {}) {
   const out = new Set()
-  for (const c of CAPABILITIES) {
+  for (const c of allCapabilities()) {
     const gate = c.toolWhen || c.detect
     if (safeCall(gate, ctx)) {
       for (const name of (c.tools || [])) out.add(name)
@@ -206,7 +211,7 @@ export function capabilityContextBlocks(ctx = {}) {
 // 运行时数据预喂：跑所有能力的 prefeed（自门控，非相关返回空），并发 await。
 // 返回 { text: 拼好的非空预喂文本, byId: { [capId]: 该能力预喂文本 } }。
 export async function runCapabilityPrefeed(ctx = {}) {
-  const withPrefeed = CAPABILITIES.filter(c => typeof c.prefeed === 'function')
+  const withPrefeed = allCapabilities().filter(c => typeof c.prefeed === 'function')
   const results = await Promise.all(withPrefeed.map(async (c) => {
     try {
       const text = await c.prefeed(ctx)
@@ -223,7 +228,7 @@ export async function runCapabilityPrefeed(ctx = {}) {
 
 // 自感知 / find_tool 用的能力清单。
 export function listCapabilities() {
-  return CAPABILITIES.map(c => ({
+  return allCapabilities().map(c => ({
     id: c.id,
     label: c.label,
     summary: c.summary,
@@ -241,7 +246,7 @@ export function findCapabilitiesByQuery(query = '') {
   if (!q) return []
   const terms = q.split(/[\s,，、。.；;]+/).map(t => t.trim()).filter(Boolean)
   const matched = []
-  for (const c of CAPABILITIES) {
+  for (const c of allCapabilities()) {
     const hitTrigger = (c.triggers || []).some(t => q.includes(String(t).toLowerCase()))
     const hay = `${c.id} ${c.label} ${c.summary}`.toLowerCase()
     const hitText = terms.some(t => t.length >= 2 && hay.includes(t))
@@ -253,7 +258,7 @@ export function findCapabilitiesByQuery(query = '') {
 }
 
 export function getCapability(id) {
-  return CAPABILITY_BY_ID.get(id) || null
+  return CAPABILITY_BY_ID.get(id) || allCapabilities().find(c => c.id === id) || null
 }
 
 function safeCall(fn, ctx) {

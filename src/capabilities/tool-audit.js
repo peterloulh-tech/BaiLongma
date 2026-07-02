@@ -39,6 +39,20 @@ function summarizeToolExecution(name, args = {}) {
   }
 }
 
+const SENSITIVE_ARG_KEY_RE = /(?:api[_-]?key|apikey|access[_-]?key|secret|token|password|authorization|bearer)/i
+const SECRET_VALUE_RE = /\b(?:sk|ak|rk|pk)-[A-Za-z0-9_\-.]{12,180}\b/g
+
+function redactAuditValue(value) {
+  if (typeof value === 'string') return value.replace(SECRET_VALUE_RE, '[redacted]')
+  if (Array.isArray(value)) return value.map(redactAuditValue)
+  if (!value || typeof value !== 'object') return value
+  const out = {}
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = SENSITIVE_ARG_KEY_RE.test(key) ? '[redacted]' : redactAuditValue(item)
+  }
+  return out
+}
+
 export function inferToolStatus(result) {
   const text = String(result ?? '').trim()
   if (!text) return 'ok'
@@ -53,7 +67,8 @@ export function writeToolAuditLog({ name, args, context, policy, status, result 
   const durationMs = Date.now() - startedAt
   const detailParts = []
   if (policy?.reason) detailParts.push(`policy=${policy.reason}`)
-  const argPreview = previewValue(args, 160)
+  const auditArgs = redactAuditValue(args)
+  const argPreview = previewValue(auditArgs, 160)
   if (argPreview && argPreview !== '{}') detailParts.push(`args=${argPreview}`)
   const resultPreview = previewValue(result || error, 220)
   if (resultPreview) detailParts.push(`result=${resultPreview}`)
@@ -62,11 +77,11 @@ export function writeToolAuditLog({ name, args, context, policy, status, result 
     insertActionLog({
       timestamp: new Date(startedAt).toISOString(),
       tool: name,
-      summary: summarizeToolExecution(name, args),
+      summary: summarizeToolExecution(name, auditArgs),
       detail: detailParts.join(' | '),
       status,
       risk: policy?.risk || classifyTool(name),
-      argsJson: safeJsonStringify(args),
+      argsJson: safeJsonStringify(auditArgs),
       resultPreview,
       error,
       durationMs,
@@ -80,7 +95,7 @@ export function writeToolAuditLog({ name, args, context, policy, status, result 
     tool: name,
     status,
     risk: policy?.risk || classifyTool(name),
-    summary: summarizeToolExecution(name, args),
+    summary: summarizeToolExecution(name, auditArgs),
     duration_ms: durationMs,
     source: getExecutionSource(context),
   })
