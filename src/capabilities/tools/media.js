@@ -440,7 +440,7 @@ async function seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt = '', m
           emitAIVideo('ready', { jobId, videoUrl: localUrl })
           // 落盘成功后记入已完成历史，面板重开/重启时能重建队列
           addHistory({ jobId, mode, prompt, ratio, resolution, duration, doneAt: Date.now() })
-          emitEvent('action', { tool: 'generate_video', summary: 'AI 视频生成完成', detail: jobId })
+          emitEvent('action', { tool: 'aivideo_panel', summary: 'AI 视频生成完成', detail: jobId })
         } catch (e) {
           // 下载失败时退而求其次：直接播远端 URL（临时链接，可能数小时后过期）
           emitAIVideo('ready', { jobId, videoUrl })
@@ -470,7 +470,7 @@ const SEEDANCE_RESOLUTIONS = new Set(['480p', '720p', '1080p'])
 function seedanceModeLabel(mode) { return mode === 'flf' ? '首尾帧' : mode === 'image' ? '图生视频' : '文生视频' }
 const SEEDANCE_NOT_CONFIGURED_GUIDE = 'AI 视频生成需要先配置火山方舟（Volcengine Ark）的 Seedance API Key。请引导用户：①登录火山方舟控制台开通 Seedance 2.0；②把 API Key 直接发给你即可自动配置，例如发送「火山视频 你的APIKey」；③如果账号用的是推理接入点或特定模型版本，可一并发模型ID/ep编号，例如「火山视频 你的APIKey 模型 ep-2024xxxx」。配置成功后再让用户重述生成需求。'
 
-// generate_video：调用 Seedance 生成视频（文生视频 / 图+提示词生视频）
+// AI video panel：调用 Seedance 生成视频（文生视频 / 图+提示词生视频）
 // action=open  → 只打开空白输入面板，用户在面板里自己填提示词/拖图片再点生成
 // action=generate（默认）→ 直接提交生成
 export async function execGenerateVideo(args = {}) {
@@ -481,9 +481,9 @@ export async function execGenerateVideo(args = {}) {
   // 用户在面板里自助填写并点“生成”（前端直连 /aivideo/generate）。
   if (action === 'open') {
     emitAIVideo('open', { configured })
-    emitEvent('action', { tool: 'generate_video', summary: '打开 AI 视频生成面板', detail: configured ? '' : '未配置 key' })
+    emitEvent('action', { tool: 'aivideo_panel', summary: '打开 AI 视频生成面板', detail: configured ? '' : '未配置 key' })
     return JSON.stringify({
-      ok: true, tool: 'generate_video', action: 'open', configured,
+      ok: true, tool: 'aivideo_panel', action: 'open', configured,
       message: configured
         ? 'AI 视频生成面板已打开（空白输入态）。用户可以在面板里直接填写提示词、可选地拖入一张参考图，然后点“生成”。你不需要替用户编写提示词或自动开始生成，简短确认一句即可。'
         : 'AI 视频生成面板已打开，但尚未配置火山方舟（Seedance）key。请引导用户发送「火山视频 你的APIKey」完成配置；面板里也已经显示了同样的提示。',
@@ -494,16 +494,16 @@ export async function execGenerateVideo(args = {}) {
   // 默认（用户刚说"帮我优化"）不要调用它——先在对话里给出改写版让用户确认。
   if (action === 'set_prompt') {
     const p = String(args.prompt || args.text || '').trim()
-    if (!p) return JSON.stringify({ ok: false, tool: 'generate_video', error: 'set_prompt 需要 prompt（要写入面板输入框的提示词）' })
+    if (!p) return JSON.stringify({ ok: false, tool: 'aivideo_panel', error: 'set_prompt 需要 prompt（要写入面板输入框的提示词）' })
     emitAIVideo('set_prompt', { prompt: p })
     setAIVideoPanelState({ prompt: p })
-    emitEvent('action', { tool: 'generate_video', summary: '写入优化后的提示词到视频面板', detail: p.slice(0, 40) })
-    return JSON.stringify({ ok: true, tool: 'generate_video', action: 'set_prompt', message: '已把这段提示词填入 AI 视频生成面板的输入框（覆盖原草稿）。提醒用户检查后自行点「生成」。' })
+    emitEvent('action', { tool: 'aivideo_panel', summary: '写入优化后的提示词到视频面板', detail: p.slice(0, 40) })
+    return JSON.stringify({ ok: true, tool: 'aivideo_panel', action: 'set_prompt', message: '已把这段提示词填入 AI 视频生成面板的输入框（覆盖原草稿）。提醒用户检查后自行点「生成」。' })
   }
 
   // 生成：未配置则返回引导（不硬拦截，交给模型/面板转述）
   if (!configured) {
-    return JSON.stringify({ ok: false, tool: 'generate_video', error: 'not_configured', guide: SEEDANCE_NOT_CONFIGURED_GUIDE })
+    return JSON.stringify({ ok: false, tool: 'aivideo_panel', error: 'not_configured', guide: SEEDANCE_NOT_CONFIGURED_GUIDE })
   }
 
   const prompt = String(args.prompt || args.text || '').trim()
@@ -515,7 +515,7 @@ export async function execGenerateVideo(args = {}) {
   }
   images = images.slice(0, 2)
   if (!prompt && !images.length) {
-    return JSON.stringify({ ok: false, tool: 'generate_video', error: '至少提供 prompt（文生视频）或图片（图生/首尾帧）；或用 action="open" 仅打开输入面板。' })
+    return JSON.stringify({ ok: false, tool: 'aivideo_panel', error: '至少提供 prompt（文生视频）或图片（图生/首尾帧）；或用 action="open" 仅打开输入面板。' })
   }
 
   let ratio = SEEDANCE_RATIOS.has(args.ratio) ? args.ratio : '16:9'
@@ -551,17 +551,17 @@ export async function execGenerateVideo(args = {}) {
     if (!res.ok) {
       const m = createData?.error?.message || `HTTP ${res.status}`
       return JSON.stringify({
-        ok: false, tool: 'generate_video', error: `创建任务失败：${m}`,
+        ok: false, tool: 'aivideo_panel', error: `创建任务失败：${m}`,
         hint: '若提示模型不存在/无权限，多半是 model ID 不对：请让用户在火山方舟确认 Seedance 模型 ID 或推理接入点（ep-xxx），重新发送「火山视频 你的APIKey 模型 正确的模型ID」即可更新。',
       })
     }
   } catch (e) {
-    return JSON.stringify({ ok: false, tool: 'generate_video', error: `创建任务异常：${e.message}` })
+    return JSON.stringify({ ok: false, tool: 'aivideo_panel', error: `创建任务异常：${e.message}` })
   }
 
   const taskId = createData.id || createData.task_id
   if (!taskId) {
-    return JSON.stringify({ ok: false, tool: 'generate_video', error: '创建任务返回缺少任务 ID', raw: createData })
+    return JSON.stringify({ ok: false, tool: 'aivideo_panel', error: '创建任务返回缺少任务 ID', raw: createData })
   }
 
   const jobId = newVideoJobId()
@@ -571,7 +571,7 @@ export async function execGenerateVideo(args = {}) {
     jobId, mode, prompt: prompt.slice(0, 120),
     ratio, resolution, duration, status: 'queued',
   })
-  emitEvent('action', { tool: 'generate_video', summary: `提交 AI 视频生成（${modeLabel}）`, detail: prompt.slice(0, 60) })
+  emitEvent('action', { tool: 'aivideo_panel', summary: `提交 AI 视频生成（${modeLabel}）`, detail: prompt.slice(0, 60) })
 
   // 记入待恢复列表（不存 apiKey，恢复时用当前配置的 key）
   addPending({ taskId, jobId, mode, prompt: prompt.slice(0, 120), ratio, resolution, duration, baseURL, createdAt: Date.now() })
@@ -583,7 +583,7 @@ export async function execGenerateVideo(args = {}) {
   })
 
   return JSON.stringify({
-    ok: true, tool: 'generate_video', task_id: taskId, jobId, mode,
+    ok: true, tool: 'aivideo_panel', task_id: taskId, jobId, mode,
     message: `视频生成任务已提交（${modeLabel}），正在右侧面板生成中，完成后会自动播放，通常需要 1–5 分钟。无需反复查询，回复用户一句简短确认即可。`,
   })
 }

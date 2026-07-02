@@ -5,9 +5,11 @@ import { fileURLToPath } from 'url'
 import { paths } from '../../paths.js'
 import {
   KIMI_VISION_SLOT_ID,
+  apiCapabilityNeedsCredential,
   buildApiSlotContext,
   configureApiCapabilitySlot,
   deleteApiCapabilitySlot,
+  getApiCapabilityCredential,
   findConfiguredApiSlotByKind,
   getApiCapabilitySlot,
   listApiCapabilitySlots,
@@ -24,8 +26,33 @@ const IMAGE_EXT_MIME = {
   '.bmp': 'image/bmp',
 }
 
+const GENERIC_SECRET_RE = /\b(?:sk|ak|rk|pk|ark)-[A-Za-z0-9_\-.]{12,180}\b/g
+
 function toolJson(payload) {
   return JSON.stringify(payload, null, 2)
+}
+
+function escapeRegExp(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function redactSlotSecrets(value, slot = {}, secretValue = '') {
+  const secret = String(secretValue || '').trim()
+  if (typeof value === 'string') {
+    const exactRedacted = secret
+      ? value.replace(new RegExp(escapeRegExp(secret), 'g'), '[redacted]')
+      : value
+    return exactRedacted.replace(GENERIC_SECRET_RE, '[redacted]')
+  }
+  if (Array.isArray(value)) return value.map(item => redactSlotSecrets(item, slot, secretValue))
+  if (!value || typeof value !== 'object') return value
+  const out = {}
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = /^(?:api[_-]?key|apikey|access[_-]?key|secret|token|password|authorization|bearer)$/i.test(key) && typeof item === 'string'
+      ? '[redacted]'
+      : redactSlotSecrets(item, slot, secretValue)
+  }
+  return out
 }
 
 function firstMarkdownImage(text = '') {
@@ -132,7 +159,7 @@ function publicRuntimeSlot(slot = {}) {
       baseURL: slot.api?.baseURL || '',
       endpoint: slot.api?.endpoint || '',
       model: slot.api?.model || '',
-      configured: !!slot.api?.apiKey,
+      configured: !!slot.api?.configured,
     },
     docs: {
       url: slot.docs?.url || '',
@@ -143,14 +170,14 @@ function publicRuntimeSlot(slot = {}) {
   }
 }
 
-function runCapabilityProgram(slot, args = {}, context = {}) {
+function runCapabilityProgram(slot, args = {}, context = {}, { apiKey = '' } = {}) {
   const programPath = resolveCapabilityProgramPath(slot.program?.path)
   const command = buildProgramCommand(slot, programPath)
   const payload = {
     args,
     slot: publicRuntimeSlot(slot),
     credentials: {
-      apiKeyEnv: 'CAPABILITY_API_KEY',
+      apiKeyEnv: slot.api?.credentialRequired ? 'CAPABILITY_API_KEY' : '',
     },
   }
   const input = JSON.stringify(payload)
@@ -166,7 +193,7 @@ function runCapabilityProgram(slot, args = {}, context = {}) {
         CAPABILITY_SLOT_ID: slot.id,
         CAPABILITY_PROVIDER: slot.provider,
         CAPABILITY_KIND: slot.kind,
-        CAPABILITY_API_KEY: slot.api?.apiKey || '',
+        CAPABILITY_API_KEY: apiKey,
         CAPABILITY_BASE_URL: slot.api?.baseURL || '',
         CAPABILITY_ENDPOINT: slot.api?.endpoint || '',
         CAPABILITY_MODEL: slot.api?.model || '',
@@ -240,6 +267,8 @@ function buildChatCompletionUrl(slot) {
 }
 
 async function callOpenAICompatibleVision(slot, { imageUrl, prompt, detail = 'auto' }, context = {}) {
+  const apiKey = getApiCapabilityCredential(slot)
+  if (!apiKey) throw new Error('slot credential is not configured')
   const body = {
     model: slot.api.model,
     messages: [
@@ -258,7 +287,7 @@ async function callOpenAICompatibleVision(slot, { imageUrl, prompt, detail = 'au
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${slot.api.apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
     signal: context.signal || AbortSignal.timeout(60_000),
@@ -286,6 +315,7 @@ export async function execAnalyzeImage(args = {}, context = {}) {
     })
   }
 
+  const slotApiKey = getApiCapabilityCredential(slot)
   try {
     const imageRef = findImageReference(args, context)
     const imageUrl = resolveImageUrl(imageRef)
@@ -299,14 +329,14 @@ export async function execAnalyzeImage(args = {}, context = {}) {
       slot_id: slot.id,
       provider: slot.provider,
       model: slot.api.model,
-      result,
+      result: redactSlotSecrets(result, slot, slotApiKey),
     })
   } catch (err) {
     return toolJson({
       ok: false,
       tool: 'analyze_image',
       slot_id: slot.id,
-      error: err.message,
+      error: redactSlotSecrets(err.message, slot, slotApiKey),
       docs_hint: buildApiSlotContext(slot).slice(0, 1200),
     })
   }
@@ -315,9 +345,9 @@ export async function execAnalyzeImage(args = {}, context = {}) {
 export async function execRunApiCapability(args = {}, context = {}) {
   const slotId = String(args.slot_id || args.slotId || '').trim()
   const kind = String(args.kind || '').trim().toLowerCase()
-  let slot = slotId ? getApiCapabilitySlot(slotId, { includeSecrets: true }) : null
+  let slot = slotId ? getApiCapabilitySlot(slotId) : null
   if (!slot && kind) {
-    slot = listApiCapabilitySlots({ includeSecrets: true })
+    slot = listApiCapabilitySlots()
       .find(s => s.enabled && s.kind === kind && s.program?.path)
   }
   if (!slot) {
@@ -341,8 +371,20 @@ export async function execRunApiCapability(args = {}, context = {}) {
     })
   }
 
+  const credentialRequired = apiCapabilityNeedsCredential(slot)
+  const slotApiKey = credentialRequired ? getApiCapabilityCredential(slot) : ''
+  if (credentialRequired && !slotApiKey) {
+    return toolJson({
+      ok: false,
+      tool: 'run_api_capability',
+      slot_id: slot.id,
+      error: 'credential_not_configured',
+      guide: 'The slot metadata exists, but its credential is missing. Reconfigure the slot with manage_api_capability(action="configure") and the API key.',
+    })
+  }
+
   try {
-    const run = await runCapabilityProgram(slot, argsForCapabilityRun(args), context)
+    const run = await runCapabilityProgram(slot, argsForCapabilityRun(args), context, { apiKey: slotApiKey })
     const parsed = parseProgramStdout(run.stdout)
     const ok = run.code === 0 && !(parsed && typeof parsed === 'object' && parsed.ok === false)
     return toolJson({
@@ -352,15 +394,15 @@ export async function execRunApiCapability(args = {}, context = {}) {
       provider: slot.provider,
       kind: slot.kind,
       exit_code: run.code,
-      result: parsed,
-      ...(run.stderr ? { stderr: run.stderr.slice(0, 2000) } : {}),
+      result: redactSlotSecrets(parsed, slot, slotApiKey),
+      ...(run.stderr ? { stderr: redactSlotSecrets(run.stderr.slice(0, 2000), slot, slotApiKey) } : {}),
     })
   } catch (err) {
     return toolJson({
       ok: false,
       tool: 'run_api_capability',
       slot_id: slot.id,
-      error: err.message,
+      error: redactSlotSecrets(err.message, slot, slotApiKey),
       docs_url: slot.docs?.url || '',
       guide: 'Use the docs_url and the registered program_path to debug the capability runner; update the runner and retest before using it again.',
     })
@@ -408,7 +450,11 @@ export function execManageApiCapability(args = {}) {
       const apiKey = String(args.api_key || args.apiKey || '').trim()
       const provider = String(args.provider || 'kimi').trim().toLowerCase()
       const kind = String(args.kind || 'vision').trim().toLowerCase()
-      if (!apiKey) {
+      const protocol = String(args.protocol || 'openai-chat-completions').trim()
+      const authType = String(args.auth_type || args.authType || '').trim().toLowerCase().replace(/-/g, '_')
+      const credentialRequired = args.credential_required ?? args.credentialRequired
+      const noCredentialRequested = authType === 'none' || credentialRequired === false || protocol === 'local-program'
+      if (!apiKey && !noCredentialRequested) {
         return toolJson({
           ok: false,
           tool: 'manage_api_capability',
@@ -423,6 +469,8 @@ export function execManageApiCapability(args = {}) {
         label: args.label || '',
         summary: args.summary || '',
         apiKey,
+        authType: noCredentialRequested ? 'none' : (authType || 'api_key'),
+        credentialRequired: !noCredentialRequested,
         docsText: args.docs || args.config_docs || args.configDocs || '',
         docsUrl: args.docs_url || args.docsUrl || '',
         docsSummary: args.docs_summary || args.docsSummary || '',
@@ -431,7 +479,7 @@ export function execManageApiCapability(args = {}) {
         model: args.model || '',
         baseURL: args.base_url || args.baseURL || '',
         endpoint: args.endpoint || '',
-        protocol: args.protocol || 'openai-chat-completions',
+        protocol,
         programPath: args.program_path || args.programPath || '',
         programRuntime: args.program_runtime || args.programRuntime || '',
         programTimeoutMs: args.program_timeout_ms || args.programTimeoutMs,
@@ -446,7 +494,7 @@ export function execManageApiCapability(args = {}) {
         tool: 'manage_api_capability',
         action,
         slot,
-        note: 'Configured by explicit agent intent. API key is stored in the slot and not returned.',
+        note: 'Configured by explicit agent intent. API key is stored in the local credential store and not returned.',
       })
     }
 

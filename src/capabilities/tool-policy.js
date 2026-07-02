@@ -52,7 +52,7 @@ const TOOL_RISK = {
   generate_lyrics: 'high',
   generate_music: 'high',
   generate_image: 'high',
-  generate_video: 'high',
+  run_capability: 'high',
   run_api_capability: 'high',
   analyze_image: 'high',
   manage_api_capability: 'high',

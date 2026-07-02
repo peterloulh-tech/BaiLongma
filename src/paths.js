@@ -44,6 +44,8 @@ export const paths = {
   // 避免被 activate() 等“全量覆盖写 config.json”的操作误删。
   seedanceConfigFile: path.join(USER_DIR, 'seedance.json'),
   apiCapabilitySlotsFile: path.join(USER_DIR, 'api-capability-slots.json'),
+  apiCapabilitySecretsFile: path.join(USER_DIR, 'data', 'api-capability-secrets.json'),
+  apiCapabilitySecretKeyFile: path.join(USER_DIR, 'data', '.api-capability-secret.key'),
   sandboxDir:         ensureDir(path.join(USER_DIR, 'sandbox')),
   sandboxApiCapabilitiesDir: ensureDir(path.join(USER_DIR, 'sandbox', 'api-capabilities')),
   sandboxMusicDir:    ensureDir(path.join(USER_DIR, 'sandbox', 'music')),

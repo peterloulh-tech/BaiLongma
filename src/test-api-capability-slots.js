@@ -8,6 +8,7 @@ import {
   KIMI_VISION_SLOT_ID,
   configureApiCapabilitySlot,
   deleteApiCapabilitySlot,
+  getApiCapabilityCredential,
   listApiCapabilitySlots,
   listApiSlotCapabilities,
   saveKimiVisionDocs,
@@ -31,11 +32,19 @@ function assert(cond, label, detail = '') {
 
 const backupExists = fs.existsSync(paths.apiCapabilitySlotsFile)
 const backup = backupExists ? fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8') : ''
+const secretsBackupExists = fs.existsSync(paths.apiCapabilitySecretsFile)
+const secretsBackup = secretsBackupExists ? fs.readFileSync(paths.apiCapabilitySecretsFile, 'utf-8') : ''
+const secretKeyBackupExists = fs.existsSync(paths.apiCapabilitySecretKeyFile)
+const secretKeyBackup = secretKeyBackupExists ? fs.readFileSync(paths.apiCapabilitySecretKeyFile, 'utf-8') : ''
 const runnerDir = path.join(paths.sandboxApiCapabilitiesDir, `test-runner-${Date.now().toString(36)}`)
 
 function restore() {
   if (backupExists) fs.writeFileSync(paths.apiCapabilitySlotsFile, backup, 'utf-8')
   else fs.rmSync(paths.apiCapabilitySlotsFile, { force: true })
+  if (secretsBackupExists) fs.writeFileSync(paths.apiCapabilitySecretsFile, secretsBackup, 'utf-8')
+  else fs.rmSync(paths.apiCapabilitySecretsFile, { force: true })
+  if (secretKeyBackupExists) fs.writeFileSync(paths.apiCapabilitySecretKeyFile, secretKeyBackup, 'utf-8')
+  else fs.rmSync(paths.apiCapabilitySecretKeyFile, { force: true })
   fs.rmSync(runnerDir, { recursive: true, force: true })
 }
 
@@ -45,6 +54,8 @@ function parseJson(value) {
 
 try {
   fs.rmSync(paths.apiCapabilitySlotsFile, { force: true })
+  fs.rmSync(paths.apiCapabilitySecretsFile, { force: true })
+  fs.rmSync(paths.apiCapabilitySecretKeyFile, { force: true })
   fs.mkdirSync(runnerDir, { recursive: true })
   const runnerPath = path.join(runnerDir, 'run.mjs')
   fs.writeFileSync(runnerPath, `
@@ -55,6 +66,7 @@ process.stdin.on('end', () => {
   console.log(JSON.stringify({
     ok: true,
     saw_api_key: Boolean(process.env.CAPABILITY_API_KEY),
+    echoed_api_key: process.env.CAPABILITY_API_KEY,
     slot_id: payload.slot.id,
     provider: payload.slot.provider,
     args: payload.args,
@@ -124,9 +136,17 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
     assert(slot?.api?.apiKey === '[configured]', 'public slot redacts API key')
     assert(slot?.program?.path === relProgramPath, 'public slot records tested runner path')
     assert(!JSON.stringify(configuredResult).includes('sk-liveKimi'), 'configure result does not echo API key')
+    const nonPublicSlot = listApiCapabilitySlots({ includeSecrets: true }).find(s => s.id === videoSlotId)
+    assert(nonPublicSlot?.api?.apiKey === '', 'slot objects never expose API key even on includeSecrets reads')
+    assert(getApiCapabilityCredential(slot) === 'sk-liveKimiVisionKeyForChecks1234567890', 'executor can resolve credential by reference')
+    const slotFileText = fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8')
+    const secretFileText = fs.readFileSync(paths.apiCapabilitySecretsFile, 'utf-8')
+    assert(!slotFileText.includes('sk-liveKimiVisionKeyForChecks1234567890'), 'slot file does not store API key plaintext')
+    assert(slotFileText.includes('credentialRef'), 'slot file stores a credential reference')
+    assert(!secretFileText.includes('sk-liveKimiVisionKeyForChecks1234567890'), 'secret store does not store API key plaintext')
 
     const tools = capabilityToolsFor({ rawText: '帮我生成视频', text: '帮我生成视频' })
-    assert(tools.includes('run_api_capability'), `video intent injects run_api_capability (got: ${tools.join(',')})`)
+    assert(tools.includes('run_capability'), `video intent injects run_capability (got: ${tools.join(',')})`)
     const blocks = capabilityContextBlocks({ rawText: '生成视频', text: '生成视频' })
     const block = blocks.find(b => b.includes('video.fakegen')) || ''
     assert(block.includes('https://docs.example.test/video-generation'), 'capability card injects docs URL')
@@ -137,16 +157,121 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
       slot_id: videoSlotId,
       args: { prompt: 'a dragon over a city' },
     }))
-    assert(run?.ok === true && run.result?.output?.type === 'video', 'run_api_capability executes the registered runner', JSON.stringify(run))
+    assert(run?.ok === true && run.result?.output?.type === 'video', 'run_capability executes the registered runner', JSON.stringify(run))
     assert(run.result?.saw_api_key === true, 'runner receives credential through environment')
+    assert(run.result?.echoed_api_key === '[redacted]', 'runner stdout cannot echo API key back into tool result')
+    assert(!JSON.stringify(run).includes('sk-liveKimiVisionKeyForChecks1234567890'), 'run result does not contain API key plaintext')
+  }
+
+  {
+    const localSlotId = 'local.wordcount'
+    const configuredResult = parseJson(execManageApiCapability({
+      action: 'configure',
+      slot_id: localSlotId,
+      provider: 'local',
+      kind: 'text_utility',
+      label: 'Local Word Counter',
+      summary: 'Counts characters locally without an API key.',
+      auth_type: 'none',
+      protocol: 'local-program',
+      execution_instructions: 'Call this when the user asks to count text locally. Pass { prompt }.',
+      program_path: relProgramPath,
+      program_runtime: 'node',
+      input_schema: {
+        type: 'object',
+        properties: { prompt: { type: 'string' } },
+        required: ['prompt'],
+      },
+      output_schema: {
+        type: 'object',
+        properties: { output: { type: 'object' } },
+      },
+      test_results: [{ name: 'local runner smoke', ok: true, detail: 'stdout JSON returned ok=true without credentials' }],
+      triggers: ['local word count', '本地计数'],
+    }))
+    assert(configuredResult?.ok === true && configuredResult.slot?.id === localSlotId,
+      'configure action registers a pure local runner capability without api_key',
+      JSON.stringify(configuredResult))
+    const localSlot = listApiCapabilitySlots().find(s => s.id === localSlotId)
+    assert(localSlot?.configured === true, 'local runner slot reports configured')
+    assert(localSlot?.api?.authType === 'none' && localSlot?.api?.credentialRequired === false, 'local runner slot declares no credential requirement')
+    assert(localSlot?.api?.apiKey === '', 'local runner slot does not show an API key placeholder')
+    assert(getApiCapabilityCredential(localSlot) === '', 'local runner slot has no credential to resolve')
+
+    const tools = capabilityToolsFor({ rawText: '请本地计数', text: '请本地计数' })
+    assert(tools.includes('run_capability'), `local intent injects run_capability (got: ${tools.join(',')})`)
+    const blocks = capabilityContextBlocks({ rawText: '本地计数', text: '本地计数' })
+    const block = blocks.find(b => b.includes(localSlotId)) || ''
+    assert(block.includes('Auth type: none'), 'local capability card declares auth_type none')
+    assert(block.includes('Credential: none required'), 'local capability card says no credential is required')
+
+    const run = parseJson(await execRunApiCapability({
+      slot_id: localSlotId,
+      args: { prompt: 'count me locally' },
+    }))
+    assert(run?.ok === true && run.result?.output?.type === 'video', 'local runner capability executes without credentials', JSON.stringify(run))
+    assert(run.result?.saw_api_key === false, 'local runner receives no API key environment value')
+  }
+
+  {
+    const localSlotId = 'local.accidental-key'
+    const configuredResult = parseJson(execManageApiCapability({
+      action: 'configure',
+      slot_id: localSlotId,
+      provider: 'local',
+      kind: 'text_utility',
+      label: 'Local Accidental Key',
+      auth_type: 'none',
+      protocol: 'local-program',
+      api_key: 'sk-shouldNotPersistForLocalCapability1234567890',
+      execution_instructions: 'Call this local runner without credentials.',
+      program_path: relProgramPath,
+      program_runtime: 'node',
+      test_results: [{ name: 'local runner smoke', ok: true }],
+      triggers: ['local accidental key'],
+    }))
+    assert(configuredResult?.ok === true && configuredResult.slot?.api?.credentialRequired === false,
+      'local runner ignores accidental api_key and stays credential-free',
+      JSON.stringify(configuredResult))
+    assert(getApiCapabilityCredential(localSlotId) === '', 'local runner with accidental api_key has no credential to resolve')
+    const secretFileText = fs.existsSync(paths.apiCapabilitySecretsFile)
+      ? fs.readFileSync(paths.apiCapabilitySecretsFile, 'utf-8')
+      : ''
+    assert(!secretFileText.includes('api-capability:local.accidental-key:apiKey'), 'local runner with accidental api_key does not create a secret ref')
+    assert(!secretFileText.includes('sk-shouldNotPersistForLocalCapability1234567890'), 'local runner accidental api_key is not stored plaintext')
+  }
+
+  {
+    const legacySlotId = 'video.legacysecret'
+    const current = JSON.parse(fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8'))
+    current.version = 1
+    current.slots.push({
+      id: legacySlotId,
+      kind: 'video_generation',
+      provider: 'legacy',
+      label: 'Legacy plaintext slot',
+      api: {
+        apiKey: 'sk-legacyPlaintextSlotKey1234567890',
+        model: 'legacy-video-model',
+        baseURL: 'https://legacy.example.test/v1',
+      },
+      program: { path: relProgramPath, runtime: 'node' },
+    })
+    fs.writeFileSync(paths.apiCapabilitySlotsFile, JSON.stringify(current, null, 2), 'utf-8')
+    const migrated = listApiCapabilitySlots({ includeSecrets: true }).find(s => s.id === legacySlotId)
+    assert(migrated?.api?.apiKey === '', 'legacy migrated slot object does not expose API key')
+    assert(getApiCapabilityCredential(migrated) === 'sk-legacyPlaintextSlotKey1234567890', 'legacy plaintext slot key remains available to executor after migration')
+    const migratedText = fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8')
+    assert(!migratedText.includes('sk-legacyPlaintextSlotKey1234567890'), 'legacy plaintext key is removed from slot file during migration')
+    deleteApiCapabilitySlot(legacySlotId)
   }
 
   {
     const tools = capabilityToolsFor({ rawText: '帮我看这张图里有什么', text: '帮我看这张图里有什么' })
-    assert(!tools.includes('analyze_image') && !tools.includes('run_api_capability'), `unconfigured vision slot is not injected (got: ${tools.join(',')})`)
+    assert(!tools.includes('analyze_image') && !tools.includes('run_capability'), `unconfigured vision slot is not injected (got: ${tools.join(',')})`)
     const blocks = capabilityContextBlocks({ rawText: '这张图识别一下', text: '这张图识别一下' })
     assert(!blocks.some(b => b.includes('vision.kimi')), 'docs-only vision slot does not inject workflow block')
-    assert(findCapabilitiesByQuery('生成视频').some(c => c.tools.includes('run_api_capability')), 'find_tool discovery can find dynamic generic capability')
+    assert(findCapabilitiesByQuery('生成视频').some(c => c.tools.includes('run_capability')), 'find_tool discovery can find dynamic generic capability')
   }
 
   {
@@ -161,6 +286,7 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
       programPath: relProgramPath,
     })
     assert(configured.configured === true, 'direct configure helper enables the slot')
+    assert(!fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8').includes('sk-directConfigForChecks1234567890'), 'direct configure helper does not write plaintext key to slot file')
     const caps = listApiSlotCapabilities()
     assert(caps.some(c => c.id === `api-slot:${KIMI_VISION_SLOT_ID}`), 'configured slot appears as a dynamic capability')
   }

@@ -116,7 +116,7 @@ export function formatAIVideoPanel(state) {
   if (draft) {
     lines.push(`The user's current draft in the prompt input box: "${draft}"`)
     lines.push('If the user asks you to "optimize / rewrite the prompt", edit the draft above directly — you can already see it, so do not ask the user again what they wrote.')
-    lines.push('By default, only give the rewritten version in the conversation for the user to review; do not auto-overwrite the input box. Only after the user explicitly says to adopt it (e.g. "用这个/就用这个") should you call generate_video(action="set_prompt", prompt="…") to write it back into the input box. The user can also copy-paste it from your reply themselves.')
+    lines.push('By default, only give the rewritten version in the conversation for the user to review; do not auto-overwrite the input box. The user can copy-paste it into the panel when ready.')
   } else if (state.open) {
     lines.push('The prompt input box is currently empty.')
   }

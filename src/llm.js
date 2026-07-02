@@ -664,7 +664,7 @@ const REPORT_CHANNEL_TOOLS = new Set(['send_message', 'express'])
 // 这些工具一旦被调用，就由运行时在执行前替它"应一声"——一个 turn 只发一次（见 callLLM 的
 // ackSent）。只覆盖真正会让人等的工具；秒回的普通问答不在此列，避免把简单对话变啰嗦。
 const SLOW_ACK_TOOLS = new Set([
-  'generate_video', 'generate_image', 'generate_music', 'generate_lyrics',
+  'generate_image', 'generate_music', 'generate_lyrics',
   'web_search', 'fetch_url', 'browser_read', 'deep_research', 'exec_command',
 ])
 function isSlowAckTool(name, args) {
@@ -677,7 +677,6 @@ function slowAckText(name, args) {
     return s ? `在找《${s}》了，稍等一下～` : '在找了，稍等一下～'
   }
   if (name === 'generate_image') return '在画了，稍等一下～'
-  if (name === 'generate_video') return '在生成视频了，稍等一下～'
   if (name === 'generate_music' || name === 'generate_lyrics') return '在创作了，稍等一下～'
   if (name === 'web_search' || name === 'fetch_url' || name === 'browser_read' || name === 'deep_research') {
     const q = String(args?.query || args?.q || args?.url || '').trim()

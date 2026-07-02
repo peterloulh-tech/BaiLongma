@@ -193,16 +193,6 @@ const IMAGE_GEN_TRIGGERS = [
   // 注：曾包含 '画图'，但常被"没说画图"等反语命中——改用更强限定的词组
   'draw', 'paint', 'generate image', 'image of', 'picture of',
 ]
-// AI 视频生成（Seedance）专用触发。不按 mmCaps gate：即使未配置 key 也暴露工具，
-// 让模型能在"未配置"时拿到 generate_video 的引导返回值去提醒用户配置（不做硬拦截）。
-const VIDEO_GEN_TRIGGERS = [
-  '生成视频', '生成个视频', '生成一段视频', '做个视频', '做段视频', '做一段视频',
-  '文生视频', '图生视频', 'ai视频', 'ai 视频', '视频生成',
-  '帮我生成视频', '用图生成视频', '把图变成视频', '让图片动起来', '让照片动起来',
-  'seedance', '即梦', '火山视频',
-  'generate video', 'text to video', 'image to video', 'make a video', 'create a video',
-]
-
 const REVIEW_TRIGGERS = [
   '检查成果', '检查一下成果', '审视', '复查', '核对', '把关', '验收', '自检',
   '检查工作', '检查我做的', '再检查', '复核', '查验',
@@ -230,7 +220,6 @@ export const TOOL_GROUPS = [
   { triggers: LYRICS_TRIGGERS,       tools: [MM_GEN_TOOLS.lyrics] },
   { triggers: MUSIC_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.music] },
   { triggers: IMAGE_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.image] },
-  { triggers: VIDEO_GEN_TRIGGERS,    tools: ['generate_video'] },
   { triggers: REVIEW_TRIGGERS,       tools: REVIEW_TOOLS },
 ]
 
@@ -316,8 +305,8 @@ export function selectTools(ctx = {}) {
   const body = (messageBody || '').toLowerCase()
   const out = new Set(CORE_TOOLS)
   // 被显式抑制的工具名:ActionLog 保活 / installed 列表 / fallback 兜底都要跳过,
-  // 最后一道 delete 兜底,确保不被任何路径加回来。当前唯一用法是跨 turn 抑制 set_tick_interval。
-  const suppressed = new Set()
+  // 最后一道 delete 兜底,确保不被任何路径加回来。用于跨 turn 抑制 set_tick_interval 等，以及挡住已移除的旧工具名。
+  const suppressed = new Set(['generate_video'])
 
   // 任务控制：有任务 → 全组；没任务 → 仅 set_task（用户能开任务）
   for (const t of (hasTask ? TASK_CTRL_FULL : TASK_CTRL_OPENER)) out.add(t)
@@ -407,9 +396,6 @@ export function selectTools(ctx = {}) {
   if (mmCaps.includes('lyrics') && hits(body, LYRICS_TRIGGERS))    out.add(MM_GEN_TOOLS.lyrics)
   if (mmCaps.includes('music')  && hits(body, MUSIC_GEN_TRIGGERS)) out.add(MM_GEN_TOOLS.music)
   if (mmCaps.includes('image')  && hits(body, IMAGE_GEN_TRIGGERS)) out.add(MM_GEN_TOOLS.image)
-  // AI 视频生成：不 gate mmCaps，关键词命中即暴露（未配置时由工具返回值引导用户配置）
-  if (hits(body, VIDEO_GEN_TRIGGERS)) out.add('generate_video')
-
   // —— ActionLog 保活 ——
   // 上轮（或最近 10 次）调用过的工具强制带上：跨轮工作流不能因为关键词没命中就断链。
   // 保活只覆盖白龙马的"已知工具"——installed 工具走单独的全注入路径。
