@@ -51,10 +51,23 @@ export { formatActivePoliciesForPrompt } from './active-policies.js'
 
 const L2_CONTEXT_HOURS = 24 * 7
 const SELF_EVOLUTION_CONTEXT_RE = /self[-\s]?evol|evolv|self[-\s]?improv|improve yourself|learn(?:ed|ing)?\s+(?:from|that|this)|lesson|policy|procedure|constraint|failure|feedback|\u81ea\u8fdb\u5316|\u8fdb\u5316|\u81ea\u5b66\u4e60|\u5b66\u5230\u4e86|\u6539\u8fdb|\u6559\u8bad|\u7ecf\u9a8c|\u89c4\u5219|\u7b56\u7565|\u53cd\u601d/i
+const API_KEY_RE = /\b(?:sk|ak|rk|pk|ark)-[A-Za-z0-9_\-.]{12,180}\b/i
+const API_DOCS_RE = /https?:\/\/|api|docs?|platform|capability|endpoint|base[-_\s]?url|model|auth|\u6587\u6863|\u63a5\u53e3|\u914d\u7f6e|\u80fd\u529b/i
+const API_CONFIG_CONFIRM_RE = /^(?:yes|yep|ok|okay|sure|do it|go ahead|\u662f|\u662f\u7684|\u53ef\u4ee5|\u597d|\u597d\u7684|\u5bf9|\u884c|\u914d\u7f6e|\u914d\u4e0a|\u8bbe\u7f6e|\u8bbe\u6210)$/i
 
 function shouldInjectSelfEvolutionContext(messageBody = '', isTick = false) {
   if (isTick) return true
   return SELF_EVOLUTION_CONTEXT_RE.test(String(messageBody || ''))
+}
+
+function hasRecentApiCapabilitySetupNeed(actionLog = []) {
+  if (!Array.isArray(actionLog)) return false
+  return actionLog.some(entry => {
+    const tool = String(entry?.tool || '')
+    if (tool !== 'analyze_image' && tool !== 'manage_api_capability') return false
+    const text = `${entry?.status || ''} ${entry?.error || ''} ${entry?.result_preview || ''} ${entry?.args_json || ''}`
+    return /not_configured|slot_not_found|credential_not_configured|api_key required|configure|capability/i.test(text)
+  })
 }
 
 // hint：一层思考器的输出文本，用于扩展 L2 的记忆检索范围
@@ -192,6 +205,12 @@ export async function runInjector({ message, state, hint = '', currentChannel = 
   // —— 按需注入工具（动态上下文记忆池第 4 步）——
   // 之前把 ~35 个工具全量注入，每轮 6-9K token 大头在这。改成按意图分组：
   // tool-router.js 看消息正文 + 上下文标志 + ActionLog 保活 + Fallback 安全网。
+  if (API_KEY_RE.test(messageBody) && API_DOCS_RE.test(messageBody)) {
+    directions.push('The current user message includes API documentation/config context plus an API key. Treat it as intent to configure an API-backed capability. Prefer manage_api_capability(action="configure" or action="save_doc") in this turn; for OpenAI-compatible vision APIs, do not build an ad-hoc tool or run raw scripts.')
+  } else if (API_CONFIG_CONFIRM_RE.test(messageBody.trim().toLowerCase()) && hasRecentApiCapabilitySetupNeed(actionLog)) {
+    directions.push('The user is confirming your immediately previous offer to configure an API capability after a not_configured or missing-credential result. Call manage_api_capability to configure the capability slot using the provider/docs/model/key already in recent context; do not switch to tool factory or an ad-hoc script.')
+  }
+
   const prefetchedItems = getValidPrefetchCache()
 
   const uiSignals = getUnconsumedUISignals(60_000)

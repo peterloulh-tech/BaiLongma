@@ -90,6 +90,9 @@ const MM_GEN_TOOLS = {
   image:  'generate_image',
 }
 const INLINE_IMAGE_RE = /!\[[^\]]*]\(|\/media\/chat\/|data:image\//i
+const API_KEY_RE = /\b(?:sk|ak|rk|pk|ark)-[A-Za-z0-9_\-.]{12,180}\b/i
+const API_DOCS_RE = /https?:\/\/|api|docs?|platform|capability|endpoint|base[-_\s]?url|model|auth|\u6587\u6863|\u63a5\u53e3|\u914d\u7f6e|\u80fd\u529b/i
+const API_CONFIG_CONFIRM_RE = /^(?:yes|yep|ok|okay|sure|do it|go ahead|\u662f|\u662f\u7684|\u53ef\u4ee5|\u597d|\u597d\u7684|\u5bf9|\u884c|\u914d\u7f6e|\u914d\u4e0a|\u8bbe\u7f6e|\u8bbe\u6210)$/i
 
 // ---- 关键词触发集 ----
 //
@@ -170,7 +173,7 @@ const ADMIN_TRIGGERS = [
   '规则', '关键词规则', '上下文规则', '记忆注入',
   'rule', 'rules', 'context rule', 'keyword rule', 'memory injection',
   '能力槽', 'api能力', 'api 能力', 'api文档', 'api 文档', '配置文档', '执行说明',
-  'kimi 识图', 'kimi识图', 'moonshot 识图', '视觉模型', '识图模型',
+  '视觉模型', '识图模型', '图片模型', '图像模型', 'ocr 模型',
   'capability slot', 'api capability', 'vision model',
 ]
 
@@ -232,6 +235,16 @@ function hits(body, triggers) {
     if (body.includes(t)) return true
   }
   return false
+}
+
+function recentApiCapabilitySetupNeed(recentActionLog = []) {
+  if (!Array.isArray(recentActionLog)) return false
+  return recentActionLog.some(entry => {
+    const tool = String(entry?.tool || '')
+    if (tool !== 'analyze_image' && tool !== 'manage_api_capability') return false
+    const text = `${entry?.status || ''} ${entry?.error || ''} ${entry?.result_preview || ''} ${entry?.args_json || ''}`
+    return /not_configured|slot_not_found|credential_not_configured|api_key required|configure|capability/i.test(text)
+  })
 }
 
 const PERSON_CARD_NON_PERSON_SUBJECT_RE = /(?:项目|功能|系统|工具|代码|文件|文档|文章|报告|方案|计划|任务|流程|架构|设计|页面|网站|应用|app|接口|api|正则|问题|bug|卡片|面板|按钮|图片|视频|音乐|游戏|天气|热点|热搜)/i
@@ -382,6 +395,12 @@ export function selectTools(ctx = {}) {
   }
   if (hits(body, ADMIN_TRIGGERS)) {
     for (const t of ADMIN_TOOLS) out.add(t)
+  }
+  if (
+    (API_KEY_RE.test(messageBody) && API_DOCS_RE.test(messageBody))
+    || (API_CONFIG_CONFIRM_RE.test(body.trim()) && recentApiCapabilitySetupNeed(recentActionLog))
+  ) {
+    out.add('manage_api_capability')
   }
   // 成果审视：有任务时已随 TASK_CTRL_FULL 注入；这里覆盖"无任务但用户明确要求检查/验收成果"的临时场景。
   if (hits(body, REVIEW_TRIGGERS)) {

@@ -367,6 +367,33 @@ function hasNone(tools, names) {
 }
 
 {
+  const tools = selectTools({
+    messageBody: 'https://docs.example.test/vision-api\n\nsk-testVisionRouterKey1234567890',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'manage_api_capability'),
+    `17) API docs plus key -> manage_api_capability injected (got: ${tools.join(',')})`)
+}
+
+{
+  const tools = selectTools({
+    messageBody: '\u662f\u7684',
+    isTick: false,
+    senderId: 'ID:000001',
+    recentActionLog: [
+      {
+        tool: 'analyze_image',
+        status: 'error',
+        result_preview: '{"ok":false,"tool":"analyze_image","error":"not_configured"}',
+      },
+    ],
+  })
+  assert(has(tools, 'manage_api_capability'),
+    `18) confirm after unconfigured vision -> manage_api_capability injected (got: ${tools.join(',')})`)
+}
+
+{
   const fullSetTools = selectTools({
     messageBody: '帮我读 D:\\readme.md，搜下 https://google.com，运行命令，提醒我，画张图，听首歌',
     isTick: true,

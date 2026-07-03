@@ -7,6 +7,7 @@ import { paths } from '../paths.js'
 const STORE_VERSION = 1
 const SAFE_STORAGE_SCHEME = 'electron-safe-storage'
 const FALLBACK_SCHEME = 'aes-256-gcm'
+const PLAIN_SCHEME = 'plain'
 const require = createRequire(import.meta.url)
 
 function nowIso() {
@@ -33,9 +34,26 @@ function writeJsonFile(file, value) {
 function readStore() {
   const parsed = readJsonFile(paths.apiCapabilitySecretsFile, null)
   if (parsed && parsed.version === STORE_VERSION && parsed.secrets && typeof parsed.secrets === 'object') {
-    return parsed
+    return migratePlainSecrets(parsed)
   }
   return { version: STORE_VERSION, secrets: {} }
+}
+
+function migratePlainSecrets(store) {
+  let changed = false
+  const secrets = store?.secrets && typeof store.secrets === 'object' ? store.secrets : {}
+  for (const [key, record] of Object.entries(secrets)) {
+    if (!record || record.scheme !== PLAIN_SCHEME) continue
+    const value = String(record.value || '')
+    if (!value) continue
+    secrets[key] = {
+      ...encryptSecret(value),
+      updatedAt: nowIso(),
+    }
+    changed = true
+  }
+  if (changed) writeStore(store)
+  return store
 }
 
 function writeStore(store) {
@@ -107,6 +125,7 @@ function decryptSecret(record) {
         decipher.final(),
       ]).toString('utf-8')
     }
+    if (record.scheme === PLAIN_SCHEME) return String(record.value || '')
   } catch {}
   return ''
 }
@@ -150,6 +169,7 @@ export function deleteSecret(ref) {
 
 export const __internal = {
   FALLBACK_SCHEME,
+  PLAIN_SCHEME,
   SAFE_STORAGE_SCHEME,
   decryptSecret,
   encryptSecret,

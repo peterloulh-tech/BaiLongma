@@ -8,12 +8,13 @@ import {
   KIMI_VISION_SLOT_ID,
   configureApiCapabilitySlot,
   deleteApiCapabilitySlot,
+  findConfiguredApiSlotByKind,
   getApiCapabilityCredential,
   listApiCapabilitySlots,
   listApiSlotCapabilities,
   saveKimiVisionDocs,
 } from './capabilities/api-slots.js'
-import { execManageApiCapability } from './capabilities/tools/api-capability.js'
+import { execAnalyzeImage, execManageApiCapability } from './capabilities/tools/api-capability.js'
 import { execRunApiCapability } from './capabilities/tools/api-capability.js'
 import { capabilityContextBlocks, capabilityToolsFor, findCapabilitiesByQuery } from './capabilities/capability-registry.js'
 import { paths } from './paths.js'
@@ -93,7 +94,7 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
   }
 
   {
-    const auto = await tryAutoConfigureKey('kimi 识图 sk-liveKimiVisionKeyForChecks1234567890', docs)
+    const auto = await tryAutoConfigureKey('kimi 识图 sk-liveGenericCapabilityKeyForChecks1234567890', docs)
     assert(auto === null, 'Kimi vision key is not configured by regex/key-auto-config')
   }
 
@@ -109,7 +110,7 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
       docs_url: 'https://docs.example.test/video-generation',
       docs_summary: 'Submit prompt and receive a generated video URL.',
       docs,
-      api_key: 'sk-liveKimiVisionKeyForChecks1234567890',
+      api_key: 'sk-liveGenericCapabilityKeyForChecks1234567890',
       model: 'video-model-test',
       base_url: 'https://api.example.test/v1',
       execution_instructions: 'Call this when the user asks to generate a video. Pass { prompt }.',
@@ -135,15 +136,15 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
     assert(slot?.configured === true, 'public slot reports configured')
     assert(slot?.api?.apiKey === '[configured]', 'public slot redacts API key')
     assert(slot?.program?.path === relProgramPath, 'public slot records tested runner path')
-    assert(!JSON.stringify(configuredResult).includes('sk-liveKimi'), 'configure result does not echo API key')
+    assert(!JSON.stringify(configuredResult).includes('sk-liveGeneric'), 'configure result does not echo API key')
     const nonPublicSlot = listApiCapabilitySlots({ includeSecrets: true }).find(s => s.id === videoSlotId)
     assert(nonPublicSlot?.api?.apiKey === '', 'slot objects never expose API key even on includeSecrets reads')
-    assert(getApiCapabilityCredential(slot) === 'sk-liveKimiVisionKeyForChecks1234567890', 'executor can resolve credential by reference')
+    assert(getApiCapabilityCredential(slot) === 'sk-liveGenericCapabilityKeyForChecks1234567890', 'executor can resolve credential by reference')
     const slotFileText = fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8')
     const secretFileText = fs.readFileSync(paths.apiCapabilitySecretsFile, 'utf-8')
-    assert(!slotFileText.includes('sk-liveKimiVisionKeyForChecks1234567890'), 'slot file does not store API key plaintext')
+    assert(!slotFileText.includes('sk-liveGenericCapabilityKeyForChecks1234567890'), 'slot file does not store API key plaintext')
     assert(slotFileText.includes('credentialRef'), 'slot file stores a credential reference')
-    assert(!secretFileText.includes('sk-liveKimiVisionKeyForChecks1234567890'), 'secret store does not store API key plaintext')
+    assert(!secretFileText.includes('sk-liveGenericCapabilityKeyForChecks1234567890'), 'secret store does not store API key plaintext')
 
     const tools = capabilityToolsFor({ rawText: '帮我生成视频', text: '帮我生成视频' })
     assert(tools.includes('run_capability'), `video intent injects run_capability (got: ${tools.join(',')})`)
@@ -160,7 +161,7 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
     assert(run?.ok === true && run.result?.output?.type === 'video', 'run_capability executes the registered runner', JSON.stringify(run))
     assert(run.result?.saw_api_key === true, 'runner receives credential through environment')
     assert(run.result?.echoed_api_key === '[redacted]', 'runner stdout cannot echo API key back into tool result')
-    assert(!JSON.stringify(run).includes('sk-liveKimiVisionKeyForChecks1234567890'), 'run result does not contain API key plaintext')
+    assert(!JSON.stringify(run).includes('sk-liveGenericCapabilityKeyForChecks1234567890'), 'run result does not contain API key plaintext')
   }
 
   {
@@ -272,6 +273,134 @@ Example key: sk-xxxxxxxxxxxxxxxxxxxxxxxx
     const blocks = capabilityContextBlocks({ rawText: '这张图识别一下', text: '这张图识别一下' })
     assert(!blocks.some(b => b.includes('vision.kimi')), 'docs-only vision slot does not inject workflow block')
     assert(findCapabilitiesByQuery('生成视频').some(c => c.tools.includes('run_capability')), 'find_tool discovery can find dynamic generic capability')
+  }
+
+  {
+    deleteApiCapabilitySlot('vision.intentcheck')
+    configureApiCapabilitySlot({
+      slotId: 'vision.intentcheck',
+      provider: 'intentcheck',
+      kind: 'vision',
+      authType: 'none',
+      credentialRequired: false,
+      programPath: relProgramPath,
+      model: 'intentcheck-vision',
+    })
+    const plainMentionTools = capabilityToolsFor({
+      rawText: '这个问题和截图关键词有关',
+      text: '这个问题和截图关键词有关',
+    })
+    assert(!plainMentionTools.includes('run_capability'),
+      `plain 截图 mention does not inject vision capability (got: ${plainMentionTools.join(',')})`)
+    const explicitVisionTools = capabilityToolsFor({
+      rawText: '帮我看截图里有什么',
+      text: '帮我看截图里有什么',
+    })
+    assert(explicitVisionTools.includes('run_capability'),
+      `explicit screenshot contents intent injects vision capability (got: ${explicitVisionTools.join(',')})`)
+    deleteApiCapabilitySlot('vision.intentcheck')
+  }
+
+  {
+    deleteApiCapabilitySlot('vision.acme')
+    const current = JSON.parse(fs.readFileSync(paths.apiCapabilitySlotsFile, 'utf-8'))
+    current.slots.push({
+      id: 'image_vision.acme',
+      kind: 'image_vision',
+      provider: 'acme',
+      label: 'Legacy Acme image vision',
+      enabled: true,
+      api: {
+        apiKey: 'sk-legacyImageVisionAliasKey1234567890',
+        baseURL: 'https://api.example.test/v1',
+        endpoint: '/chat/completions',
+        model: 'acme-vision-model',
+      },
+    })
+    fs.writeFileSync(paths.apiCapabilitySlotsFile, JSON.stringify(current, null, 2), 'utf-8')
+    const legacyVision = findConfiguredApiSlotByKind('vision')
+    assert(legacyVision?.id === 'vision.acme', 'legacy image_vision.<provider> slot is canonicalized and discoverable as vision')
+    assert(legacyVision?.kind === 'vision', 'legacy image_vision kind is normalized to vision')
+    assert(getApiCapabilityCredential(legacyVision) === 'sk-legacyImageVisionAliasKey1234567890', 'legacy image_vision inline key migrates into credential store')
+    deleteApiCapabilitySlot('image_vision.acme')
+  }
+
+  {
+    const configured = configureApiCapabilitySlot({
+      provider: 'acme',
+      kind: 'image_vision',
+      apiKey: 'sk-canonicalVisionAliasKey1234567890',
+      model: 'acme-vision-model',
+      baseURL: 'https://api.example.test/v1',
+    })
+    assert(configured.id === 'vision.acme', 'image_vision configure canonicalizes to vision.<provider>')
+    assert(configured.kind === 'vision', 'image_vision configure stores kind=vision')
+    deleteApiCapabilitySlot('vision.acme')
+  }
+
+  {
+    const configured = configureApiCapabilitySlot({
+      slotId: 'acme.vision',
+      kind: 'image_vision',
+      apiKey: 'sk-reversedVisionSlotIdKey1234567890',
+      model: 'acme-vision-model',
+      baseURL: 'https://api.example.test/v1',
+    })
+    assert(configured.id === 'vision.acme', 'provider.kind slot ids canonicalize to vision.<provider>')
+    assert(configured.provider === 'acme', 'provider is inferred from provider.kind slot id when omitted')
+    deleteApiCapabilitySlot('vision.acme')
+  }
+
+  {
+    const originalFetch = globalThis.fetch
+    const captured = []
+    globalThis.fetch = async (_url, options = {}) => {
+      captured.push(JSON.parse(String(options.body || '{}')))
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ choices: [{ message: { content: 'mock vision result' } }] })
+        },
+      }
+    }
+    try {
+      configureApiCapabilitySlot({
+        slotId: 'vision.moonshot',
+        provider: 'moonshot',
+        kind: 'vision',
+        apiKey: 'sk-moonshotVisionTemperatureCheck1234567890',
+        model: 'kimi-k2.6',
+        baseURL: 'https://api.moonshot.cn/v1',
+      })
+      const moonshotResult = parseJson(await execAnalyzeImage({
+        slot_id: 'vision.moonshot',
+        image_url: 'data:image/png;base64,AA==',
+        prompt: 'describe',
+      }))
+      assert(moonshotResult?.ok === true, 'mocked Moonshot analyze_image succeeds', JSON.stringify(moonshotResult))
+      assert(captured.at(-1)?.temperature === 1, 'Moonshot/Kimi vision uses temperature=1')
+
+      configureApiCapabilitySlot({
+        slotId: 'vision.acme',
+        provider: 'acme',
+        kind: 'vision',
+        apiKey: 'sk-acmeVisionTemperatureCheck1234567890',
+        model: 'acme-vision-model',
+        baseURL: 'https://api.example.test/v1',
+      })
+      const acmeResult = parseJson(await execAnalyzeImage({
+        slot_id: 'vision.acme',
+        image_url: 'data:image/png;base64,AA==',
+        prompt: 'describe',
+      }))
+      assert(acmeResult?.ok === true, 'mocked generic analyze_image succeeds', JSON.stringify(acmeResult))
+      assert(captured.at(-1)?.temperature === 0.2, 'generic OpenAI-compatible vision keeps low temperature')
+    } finally {
+      globalThis.fetch = originalFetch
+      deleteApiCapabilitySlot('vision.moonshot')
+      deleteApiCapabilitySlot('vision.acme')
+    }
   }
 
   {

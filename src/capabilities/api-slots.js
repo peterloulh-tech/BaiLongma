@@ -5,6 +5,7 @@ import { deleteSecret, getSecret, hasSecret, setSecret } from './secret-store.js
 export const KIMI_VISION_SLOT_ID = 'vision.kimi'
 
 const SLOT_FILE_VERSION = 2
+const DEFAULT_PROVIDER = 'custom'
 const DEFAULT_KIMI_VISION_MODEL = 'moonshot-v1-32k-vision-preview'
 const DEFAULT_KIMI_BASE_URL = 'https://api.moonshot.cn/v1'
 const DEFAULT_CHAT_COMPLETIONS_ENDPOINT = '/chat/completions'
@@ -12,12 +13,15 @@ const GENERIC_API_CAPABILITY_TOOLS = ['run_capability']
 const LEGACY_TOOL_BY_KIND = {
   vision: ['analyze_image'],
 }
+const VISION_KIND_ALIASES = new Set(['vision', 'image_vision', 'image-vision', 'image', 'visual', 'ocr'])
 
 const DEFAULT_VISION_TRIGGERS = [
   '识图', '看图', '读图', '图片识别', '图像识别', '图片理解', '图里', '图上',
   '这张图', '这幅图', '这张照片', '照片里', '截图里', 'ocr', '视觉',
   'vision', 'image recognition', 'analyze image', 'describe image', 'read image',
 ]
+const VISION_ATTACHMENT_RE = /!\[[^\]]*]\(|\/media\/chat\/|data:image\/|https?:\/\/\S+\.(?:png|jpe?g|webp|gif)|\.(?:png|jpe?g|webp|gif)\b/i
+const VISION_INTENT_RE = /识图|看图|读图|图片识别|图像识别|图片理解|图里|图上|这张图|这幅图|这张照片|照片里|截图里|截图中|截图上|截图内容|ocr|vision|image recognition|analyze image|describe image|read image/i
 
 const SECRET_TOKEN_RE = /\b(?:sk|ak|rk|pk|ark)-[A-Za-z0-9_\-.]{12,180}\b/g
 const AUTH_TYPES = new Set(['api_key', 'none'])
@@ -47,8 +51,47 @@ function normalizeId(value = '') {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
-function defaultSlotId(kind = 'vision', provider = 'kimi') {
-  return normalizeId(`${kind}.${provider}`)
+function normalizeKind(value = 'vision') {
+  const kind = String(value || 'vision').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_')
+  return VISION_KIND_ALIASES.has(kind) ? 'vision' : kind
+}
+
+export function normalizeApiCapabilityKind(value = 'vision') {
+  return normalizeKind(value)
+}
+
+function normalizeProvider(value = DEFAULT_PROVIDER) {
+  return String(value || DEFAULT_PROVIDER).trim().toLowerCase()
+}
+
+function defaultSlotId(kind = 'vision', provider = DEFAULT_PROVIDER) {
+  return normalizeId(`${normalizeKind(kind)}.${normalizeProvider(provider)}`)
+}
+
+function canonicalSlotId({ id = '', kind = 'vision', provider = DEFAULT_PROVIDER } = {}) {
+  const explicit = normalizeId(id)
+  if (!explicit) return defaultSlotId(kind, provider)
+
+  const parts = explicit.split('.').filter(Boolean)
+  if (parts.length === 2) {
+    const [first, second] = parts
+    if (normalizeKind(first) === 'vision') return defaultSlotId('vision', second)
+    if (normalizeKind(second) === 'vision') return defaultSlotId('vision', first)
+  }
+
+  return explicit
+}
+
+function providerFromSlotId(id = '', kind = 'vision') {
+  const explicit = normalizeId(id)
+  const parts = explicit.split('.').filter(Boolean)
+  if (parts.length !== 2) return ''
+  const [first, second] = parts
+  const normalizedKind = normalizeKind(kind)
+  if (normalizeKind(first) === 'vision') return second
+  if (normalizeKind(second) === 'vision') return first
+  if (normalizeId(normalizedKind) === first) return second
+  return ''
 }
 
 function apiCredentialRef(slotId = '') {
@@ -56,9 +99,9 @@ function apiCredentialRef(slotId = '') {
 }
 
 function rawSlotId(slot = {}) {
-  const kind = String(slot.kind || 'vision').trim().toLowerCase()
-  const provider = String(slot.provider || 'kimi').trim().toLowerCase()
-  return normalizeId(slot.id) || defaultSlotId(kind, provider)
+  const kind = normalizeKind(slot.kind || 'vision')
+  const provider = normalizeProvider(slot.provider || providerFromSlotId(slot.id, kind) || DEFAULT_PROVIDER)
+  return canonicalSlotId({ id: slot.id, kind, provider })
 }
 
 function isApiKeyPlaceholder(value = '') {
@@ -144,12 +187,6 @@ function migrateSlotFileSecrets(file = {}) {
   return { version: SLOT_FILE_VERSION, slots: nextSlots }
 }
 
-function isKimiVisionSlot({ id = '', kind = '', provider = '' } = {}) {
-  return normalizeId(id) === KIMI_VISION_SLOT_ID
-    || (String(kind || '').trim().toLowerCase() === 'vision'
-      && /^(kimi|moonshot|月之暗面)$/i.test(String(provider || '').trim()))
-}
-
 function uniqueStrings(values = []) {
   const out = []
   const seen = new Set()
@@ -168,10 +205,9 @@ function redactSecrets(text = '') {
 }
 
 function normalizeSlot(slot = {}, { preserveInlineApiKey = false } = {}) {
-  const kind = String(slot.kind || 'vision').trim().toLowerCase()
-  const provider = String(slot.provider || 'kimi').trim().toLowerCase()
-  const id = normalizeId(slot.id) || defaultSlotId(kind, provider)
-  const kimiVision = isKimiVisionSlot({ id, kind, provider })
+  const kind = normalizeKind(slot.kind || 'vision')
+  const provider = normalizeProvider(slot.provider || providerFromSlotId(slot.id, kind) || DEFAULT_PROVIDER)
+  const id = canonicalSlotId({ id: slot.id, kind, provider })
   const api = slot.api && typeof slot.api === 'object' ? slot.api : {}
   const docs = slot.docs && typeof slot.docs === 'object' ? slot.docs : {}
   const credentialRef = String(api.credentialRef || api.credential_ref || apiCredentialRef(id)).trim()
@@ -183,15 +219,15 @@ function normalizeSlot(slot = {}, { preserveInlineApiKey = false } = {}) {
     id,
     kind,
     provider,
-    label: String(slot.label || (id === KIMI_VISION_SLOT_ID ? 'Kimi 视觉识图' : id)).trim(),
+    label: String(slot.label || id).trim(),
     summary: String(slot.summary || '通过已配置的外部 API 服务执行能力槽。').trim(),
     enabled: slot.enabled !== false,
     triggers: uniqueStrings([...(slot.triggers || []), ...(kind === 'vision' ? DEFAULT_VISION_TRIGGERS : [])]),
     api: {
       protocol: String(api.protocol || 'openai-chat-completions').trim(),
-      baseURL: String(api.baseURL || api.baseUrl || (kimiVision ? DEFAULT_KIMI_BASE_URL : '')).trim(),
+      baseURL: String(api.baseURL || api.baseUrl || '').trim(),
       endpoint: String(api.endpoint || DEFAULT_CHAT_COMPLETIONS_ENDPOINT).trim(),
-      model: String(api.model || (kimiVision ? DEFAULT_KIMI_VISION_MODEL : '')).trim(),
+      model: String(api.model || '').trim(),
       authType,
       credentialRequired,
       credentialRef,
@@ -294,7 +330,7 @@ function storageSlot(slot) {
 function upsertSlot(slot) {
   const normalized = normalizeSlot(slot, { preserveInlineApiKey: true })
   const file = readSlotFile()
-  const existing = file.slots.find(s => normalizeId(s?.id) === normalized.id)
+  const existing = file.slots.find(s => canonicalSlotId(s) === normalized.id)
   const next = storageSlot({
     ...(existing || {}),
     ...normalized,
@@ -304,7 +340,11 @@ function upsertSlot(slot) {
     createdAt: existing?.createdAt || normalized.createdAt,
     updatedAt: nowIso(),
   })
-  const slots = file.slots.filter(s => normalizeId(s?.id) !== normalized.id)
+  const slots = file.slots.filter(s => {
+    const id = canonicalSlotId(s)
+    if (id === normalized.id) return false
+    return true
+  })
   slots.push(next)
   writeSlotFile(slots)
   return next
@@ -316,14 +356,17 @@ export function listApiCapabilitySlots({ includeSecrets = false } = {}) {
   return includeSecrets ? slots : slots.map(publicSlot)
 }
 
-export function getApiCapabilitySlot(id = KIMI_VISION_SLOT_ID, { includeSecrets = false } = {}) {
+export function getApiCapabilitySlot(id = '', { includeSecrets = false } = {}) {
   const normalizedId = normalizeId(id)
-  const slot = readSlotFile().slots.map(s => normalizeSlot(s)).find(s => s.id === normalizedId)
+  if (!normalizedId) return null
+  const canonicalId = canonicalSlotId({ id: normalizedId })
+  const slots = readSlotFile().slots.map(s => normalizeSlot(s))
+  const slot = slots.find(s => s.id === normalizedId || canonicalSlotId(s) === canonicalId)
   if (!slot) return null
   return includeSecrets ? slot : publicSlot(slot)
 }
 
-export function getApiCapabilityCredential(slotOrId = KIMI_VISION_SLOT_ID) {
+export function getApiCapabilityCredential(slotOrId = '') {
   const slot = typeof slotOrId === 'string'
     ? getApiCapabilitySlot(slotOrId)
     : normalizeSlot(slotOrId)
@@ -332,7 +375,7 @@ export function getApiCapabilityCredential(slotOrId = KIMI_VISION_SLOT_ID) {
   return getSecret(slot.api?.credentialRef || apiCredentialRef(slot.id))
 }
 
-export function apiCapabilityNeedsCredential(slotOrId = KIMI_VISION_SLOT_ID) {
+export function apiCapabilityNeedsCredential(slotOrId = '') {
   const slot = typeof slotOrId === 'string'
     ? getApiCapabilitySlot(slotOrId)
     : normalizeSlot(slotOrId)
@@ -342,9 +385,10 @@ export function apiCapabilityNeedsCredential(slotOrId = KIMI_VISION_SLOT_ID) {
 export function deleteApiCapabilitySlot(id) {
   const normalizedId = normalizeId(id)
   if (!normalizedId) return false
+  const canonicalId = canonicalSlotId({ id: normalizedId })
   const file = readSlotFile()
-  const existing = file.slots.find(s => normalizeId(s?.id) === normalizedId)
-  const next = file.slots.filter(s => normalizeId(s?.id) !== normalizedId)
+  const existing = file.slots.find(s => normalizeId(s?.id) === normalizedId || canonicalSlotId(s) === canonicalId)
+  const next = file.slots.filter(s => normalizeId(s?.id) !== normalizedId && canonicalSlotId(s) !== canonicalId)
   if (next.length === file.slots.length) return false
   const ref = existing ? normalizeSlot(existing).api.credentialRef : apiCredentialRef(normalizedId)
   deleteSecret(ref)
@@ -360,7 +404,7 @@ export function setApiCapabilitySlotEnabled(id, enabled) {
 
 export function configureApiCapabilitySlot({
   slotId = '',
-  provider = 'kimi',
+  provider = '',
   kind = 'vision',
   label = '',
   summary = '',
@@ -386,7 +430,10 @@ export function configureApiCapabilitySlot({
   triggers = [],
   enabled = true,
 } = {}) {
-  const id = normalizeId(slotId) || defaultSlotId(kind, provider)
+  const normalizedKind = normalizeKind(kind)
+  const requestedId = normalizeId(slotId)
+  const normalizedProvider = normalizeProvider(provider || providerFromSlotId(requestedId, normalizedKind) || DEFAULT_PROVIDER)
+  const id = canonicalSlotId({ id: requestedId, kind: normalizedKind, provider: normalizedProvider })
   const existing = getApiCapabilitySlot(id) || {}
   const existingApi = existing.api || {}
   const existingDocs = existing.docs || {}
@@ -408,9 +455,9 @@ export function configureApiCapabilitySlot({
   return publicSlot(upsertSlot({
     ...existing,
     id,
-    kind,
-    provider,
-    label: label || existing.label || (id === KIMI_VISION_SLOT_ID ? 'Kimi 视觉识图' : `${provider} ${kind}`),
+    kind: normalizedKind,
+    provider: normalizedProvider,
+    label: label || existing.label || `${normalizedProvider} ${normalizedKind}`,
     summary: summary || existing.summary || '通过已配置的外部 API 服务执行能力槽。',
     enabled,
     triggers,
@@ -425,7 +472,7 @@ export function configureApiCapabilitySlot({
       apiKey,
     },
     docs: nextDocs,
-    executionInstructions: executionInstructions || existing.executionInstructions || defaultExecutionInstructions(kind),
+    executionInstructions: executionInstructions || existing.executionInstructions || defaultExecutionInstructions(normalizedKind),
     program: nextProgram,
     inputSchema: inputSchema || existing.inputSchema,
     outputSchema: outputSchema || existing.outputSchema,
@@ -506,11 +553,15 @@ function toolsForSlot(slot = {}) {
 }
 
 export function findConfiguredApiSlotByKind(kind = 'vision', preferredId = '') {
+  const normalizedKind = normalizeKind(kind)
   const slots = listApiCapabilitySlots()
-    .filter(slot => slot.enabled && slot.api?.configured && slot.kind === kind)
+    .filter(slot => slot.enabled && slot.api?.configured && slot.kind === normalizedKind)
   if (!slots.length) return null
   const id = normalizeId(preferredId)
-  if (id) return slots.find(slot => slot.id === id) || null
+  if (id) {
+    const canonicalId = canonicalSlotId({ id })
+    return slots.find(slot => slot.id === id || canonicalSlotId(slot) === canonicalId) || null
+  }
   return slots[0]
 }
 
@@ -556,7 +607,7 @@ function matchesApiSlotIntent(slot, ctx = {}) {
   if (!raw.trim()) return false
   if ((slot.triggers || []).some(t => raw.includes(String(t).toLowerCase()))) return true
   if (slot.kind === 'vision') {
-    return /!\[[^\]]*]\(|\/media\/chat\/|data:image\/|https?:\/\/\S+\.(?:png|jpe?g|webp|gif)|\.(?:png|jpe?g|webp|gif)\b|截图|照片|图片|这张图|图里|ocr|vision|image/i.test(raw)
+    return VISION_ATTACHMENT_RE.test(raw) || VISION_INTENT_RE.test(raw)
   }
   return false
 }

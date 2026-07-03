@@ -11,6 +11,10 @@ export function friendlyChannelLabel(channel) {
   return "";
 }
 
+export function shouldAttachSystemScreenshot() {
+  return false;
+}
+
 export function initChat({
   apiBase,
   maxHistory,
@@ -318,43 +322,6 @@ export function initChat({
     return [images.join("\n"), String(content || "").trim()].filter(Boolean).join("\n\n");
   }
 
-  const SYSTEM_SCREENSHOT_RE = /(?:\u7cfb\u7edf|\u5c4f\u5e55)?\u622a\u56fe|\u8fd9\u5f20\u56fe|\u56fe\u91cc|\u770b\u56fe|screenshot|screen\s*shot/i;
-  const INLINE_IMAGE_RE = /!\[[^\]]*]\(|\/media\/chat\/|data:image\//i;
-
-  function shouldAttachSystemScreenshot(text) {
-    const raw = String(text || "");
-    return SYSTEM_SCREENSHOT_RE.test(raw) && !INLINE_IMAGE_RE.test(raw);
-  }
-
-  async function maybeAttachSystemScreenshot(content, { skip = false } = {}) {
-    const base = { content, displayContent: content, attachments: [] };
-    if (skip) return base;
-    if (!shouldAttachSystemScreenshot(content)) return base;
-    const api = window.bailongma;
-    if (typeof api?.getLatestSystemScreenshot !== "function") return base;
-    try {
-      const shot = await api.getLatestSystemScreenshot({
-        preferClipboard: true,
-        maxAgeMs: 15 * 60 * 1000,
-      });
-      if (!shot?.ok || !shot.dataUrl) return base;
-      const alt = "\u7cfb\u7edf\u622a\u56fe";
-      return {
-        content,
-        displayContent: `${content}\n\n![${alt}](${shot.dataUrl})`,
-        attachments: [{
-          data_url: shot.dataUrl,
-          alt,
-          name: shot.filename || "system-screenshot.png",
-          source: shot.source || "system",
-        }],
-      };
-    } catch (error) {
-      console.warn("[system screenshot]", error?.message || error);
-      return base;
-    }
-  }
-
   function imageExtFromMime(mime = "") {
     const type = String(mime || "").split(";")[0].trim().toLowerCase();
     if (type === "image/jpeg" || type === "image/jpg") return ".jpg";
@@ -499,7 +466,7 @@ export function initChat({
       clearPastedImages();
       autoGrowInput();
     }
-    const prepared = await maybeAttachSystemScreenshot(rawContent, { skip: pastedAttachments.length > 0 });
+    const prepared = { content: rawContent, displayContent: rawContent, attachments: [] };
     prepared.attachments = [...(prepared.attachments || []), ...pastedAttachments];
     prepared.displayContent = appendAttachmentMarkdown(prepared.displayContent || prepared.content, pastedAttachments);
     const content = prepared.content;
