@@ -13,6 +13,28 @@ const MIME_TO_EXT = new Map([
   ['image/gif', '.gif'],
   ['image/webp', '.webp'],
   ['image/bmp', '.bmp'],
+  ['video/mp4', '.mp4'],
+  ['video/quicktime', '.mov'],
+  ['video/webm', '.webm'],
+  ['video/x-matroska', '.mkv'],
+  ['video/x-msvideo', '.avi'],
+  ['audio/mpeg', '.mp3'],
+  ['audio/ogg', '.ogg'],
+  ['audio/wav', '.wav'],
+  ['audio/silk', '.silk'],
+  ['audio/amr', '.amr'],
+  ['application/pdf', '.pdf'],
+  ['application/msword', '.doc'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
+  ['application/vnd.ms-excel', '.xls'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+  ['application/vnd.ms-powerpoint', '.ppt'],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
+  ['application/zip', '.zip'],
+  ['application/x-tar', '.tar'],
+  ['application/gzip', '.gz'],
+  ['text/plain', '.txt'],
+  ['text/csv', '.csv'],
 ])
 
 const EXT_TO_MIME = new Map([
@@ -22,6 +44,28 @@ const EXT_TO_MIME = new Map([
   ['.gif', 'image/gif'],
   ['.webp', 'image/webp'],
   ['.bmp', 'image/bmp'],
+  ['.mp4', 'video/mp4'],
+  ['.mov', 'video/quicktime'],
+  ['.webm', 'video/webm'],
+  ['.mkv', 'video/x-matroska'],
+  ['.avi', 'video/x-msvideo'],
+  ['.mp3', 'audio/mpeg'],
+  ['.ogg', 'audio/ogg'],
+  ['.wav', 'audio/wav'],
+  ['.silk', 'audio/silk'],
+  ['.amr', 'audio/amr'],
+  ['.pdf', 'application/pdf'],
+  ['.doc', 'application/msword'],
+  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.xls', 'application/vnd.ms-excel'],
+  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['.ppt', 'application/vnd.ms-powerpoint'],
+  ['.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ['.zip', 'application/zip'],
+  ['.tar', 'application/x-tar'],
+  ['.gz', 'application/gzip'],
+  ['.txt', 'text/plain'],
+  ['.csv', 'text/csv'],
 ])
 
 function normalizeExt(ext = '', fallback = '.png') {
@@ -34,14 +78,14 @@ function extFromMime(mime = '', fallback = '.png') {
   return MIME_TO_EXT.get(String(mime || '').split(';')[0].trim().toLowerCase()) || fallback
 }
 
-function mimeFromExt(ext = '') {
+export function mimeFromChatMediaExt(ext = '') {
   return EXT_TO_MIME.get(normalizeExt(ext)) || 'application/octet-stream'
 }
 
-export function persistChatMediaBuffer(buffer, { ext = '.png' } = {}) {
+export function persistChatMediaBuffer(buffer, { ext = '.png', mime = '', originalFilename = '' } = {}) {
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '')
   if (!buf.length) throw new Error('media buffer is empty')
-  const cleanExt = normalizeExt(ext)
+  const cleanExt = normalizeExt(ext || extFromMime(mime, '.bin'), '.bin')
   const hash = crypto.createHash('sha256').update(buf).digest('hex')
   const storedName = `${hash}${cleanExt}`
   const storedPath = path.join(paths.mediaDir, storedName)
@@ -50,7 +94,8 @@ export function persistChatMediaBuffer(buffer, { ext = '.png' } = {}) {
     url: `/media/chat/${storedName}`,
     path: storedPath,
     filename: storedName,
-    mime: mimeFromExt(cleanExt),
+    originalFilename,
+    mime: String(mime || '').trim() || mimeFromChatMediaExt(cleanExt),
     size: buf.length,
   }
 }

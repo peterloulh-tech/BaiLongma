@@ -32,7 +32,7 @@ import { setDocPanelState, getDocPanelState, DOC_TOPICS } from './docs.js'
 import { getTraces, getTrace, clearTraces, getTraceStatus } from './runtime/turn-trace.js'
 import { getTerminalStreamSnapshot } from './terminal-stream.js'
 import { getSelfEvolutionSnapshot } from './memory/self-evolution.js'
-import { markdownImage, persistChatMediaDataUrl } from './chat-media.js'
+import { markdownImage, mimeFromChatMediaExt, persistChatMediaDataUrl } from './chat-media.js'
 
 export { emitEvent }
 
@@ -1077,12 +1077,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       if (!resolvedFile.startsWith(resolvedDir + path.sep)) {
         res.writeHead(403); res.end('forbidden'); return
       }
-      const mimeMap = {
-        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
-        '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
-      }
-      const contentType = mimeMap[path.extname(filename).toLowerCase()] || 'application/octet-stream'
+      const contentType = mimeFromChatMediaExt(path.extname(filename).toLowerCase())
       try {
         const stat = fs.statSync(filePath)
         res.writeHead(200, {
