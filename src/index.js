@@ -53,6 +53,7 @@ import { parseMarkers } from './runtime/markers.js'
 import { createConsciousnessLoop } from './runtime/consciousness-loop.js'
 import { buildStrictEvaluationContext, filterStrictEvaluationTools, resolveStrictEvaluationMode } from './runtime/strict-evaluation.js'
 import { extractVerbatimPayload, findRecentVerbatimPayload, hasInlineVerbatimPayload, isVerbatimOutputRequest, isVerbatimSetup, isVerbatimStart } from './runtime/verbatim.js'
+import { filterSendMessageForLocalReply, turnNeedsExternalSendMessage } from './runtime/local-reply-tools.js'
 import { refreshUserProfile } from './profile/infer.js'
 import { isSoftwareInstallRequest } from './software-install-intent.js'
 import { formatTerminalStreamContext } from './terminal-stream.js'
@@ -674,18 +675,6 @@ function throwIfAborted(signal) {
 function getProcessPriority(msg) {
   if (!msg) return PRIORITY.tick
   return typeof msg.priority === 'number' ? msg.priority : PRIORITY.background
-}
-
-// 语音轮里"明显要往外部/社交渠道发送"的意图——命中则保留 send_message 工具，
-// 否则语音轮默认撤掉它（回复走纯文本直投+TTS）。宁可漏判（少数情况下模型够不到外发通道，
-// 会如实说一声）也不误判（"发"字太宽泛不收，必须带明确渠道词或"发到/发给我"这类路由意图）。
-const EXTERNAL_SEND_HINTS = [
-  '微信', 'wechat', 'discord', '飞书', 'feishu', '企微', 'wecom',
-  '发到', '推送到', '发给我', '转给', '发条微信', '发个微信', '发我微信',
-]
-function voiceTurnNeedsSendMessage(text) {
-  const b = String(text || '').toLowerCase()
-  return EXTERNAL_SEND_HINTS.some(k => b.includes(k.toLowerCase()))
 }
 
 function deliverDirectReply(msg, content, finishTurn) {
@@ -1398,11 +1387,12 @@ async function runTurn(input, label, msg = null) {
     // send_message 才能送达外部平台。省掉 send_message 那一整轮额外 LLM 调用是语音提速的关键。
     localReply = !!msg?.fromId && !silentSignal && !isExternalChannel(msg?.channel)
     let turnTools = resolveTurnTools(injection.tools, { silentSignal, strictEvaluation })
+    turnTools = filterSendMessageForLocalReply(turnTools, { localReply, silentSignal, input })
     // 语音轮撤掉 send_message（用户决策）：语音回复直接走纯文本 → runtime 协议兜底 executeTool
     // 投递 + 自动 TTS，模型既不必也不能调 send_message，彻底消除"调工具那一轮"的延迟，也不让它
     // 在 UI 里显式出现。例外：消息意图明显要往外部/社交渠道发（"发到我微信"等）时保留，否则模型
     // 够不到外发通道。撤的只是模型的工具入口——本地投递通道（fallback / slow-ack）不受影响。
-    if (voiceTurn && !silentSignal && !voiceTurnNeedsSendMessage(input)) {
+    if (voiceTurn && !silentSignal && !turnNeedsExternalSendMessage(input)) {
       turnTools = turnTools.filter(t => t !== 'send_message')
     }
     // 能力展示是本地可视化动作。若 capability_demo 已按需注入，保留 send_message 会让模型
