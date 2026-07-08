@@ -267,9 +267,10 @@ FunctionEnd
     Call BailongmaRescueForeignInstallRootItems
   ${endIf}
 
-  ; Native Node addons are ABI-bound to Electron. Clean old unpacked copies
-  ; before installing so upgrades cannot keep a stale better_sqlite3.node.
-  RMDir /r "$INSTDIR\resources\app.asar.unpacked\node_modules\better-sqlite3"
+  ; Do not delete native module directories in customInit. This hook runs before
+  ; the new payload has been fully extracted and validated; deleting here can
+  ; leave an otherwise working install broken if setup is cancelled or killed.
+  ; The repaired payload extraction in customInstall overwrites owned files.
 !macroend
 
 !endif

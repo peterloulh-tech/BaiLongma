@@ -354,10 +354,58 @@ function sendUpdaterStatus(payload = {}) {
   })
 }
 
+const EXPECTED_BETTER_SQLITE3_VERSION = '12.8.0'
+
+function validatePackagedNativeModules() {
+  if (IS_DEV) return
+  const appPath = app.getAppPath()
+  if (!appPath || !appPath.endsWith('.asar')) return
+
+  const unpackedRoot = `${appPath}.unpacked`
+  const moduleRoot = path.join(unpackedRoot, 'node_modules', 'better-sqlite3')
+  const virtualModuleRoot = path.join(appPath, 'node_modules', 'better-sqlite3')
+  const nativePath = path.join(moduleRoot, 'build', 'Release', 'better_sqlite3.node')
+  const issues = []
+
+  try {
+    const nativeStat = fs.statSync(nativePath)
+    if (!nativeStat.isFile() || nativeStat.size < 1024) {
+      issues.push(`Invalid native binding: ${nativePath}`)
+    }
+  } catch {
+    issues.push(`Missing native binding: ${nativePath}`)
+  }
+
+  const packagePath = path.join(virtualModuleRoot, 'package.json')
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'))
+    if (pkg?.version !== EXPECTED_BETTER_SQLITE3_VERSION) {
+      issues.push(`Unexpected better-sqlite3 version ${pkg?.version || 'unknown'}; expected ${EXPECTED_BETTER_SQLITE3_VERSION}`)
+    }
+  } catch (err) {
+    issues.push(`Unreadable better-sqlite3 package.json: ${err.message}`)
+  }
+
+  for (const rel of ['lib/index.js', 'lib/database.js', 'lib/sqlite-error.js']) {
+    const filePath = path.join(virtualModuleRoot, rel)
+    if (!fs.existsSync(filePath)) issues.push(`Incomplete better-sqlite3 package, missing: ${filePath}`)
+  }
+
+  const obsoleteNativePath = path.join(virtualModuleRoot, 'lib', 'better_sqlite3.node')
+  if (fs.existsSync(obsoleteNativePath)) {
+    issues.push(`Conflicting obsolete native binding layout found: ${obsoleteNativePath}`)
+  }
+
+  if (issues.length) {
+    throw new Error(`Packaged native module integrity check failed:\n${issues.join('\n')}\nPlease close Bailongma and reinstall it with the official installer.`)
+  }
+}
+
 async function bootstrapBackend(port) {
   process.env.BAILONGMA_USER_DIR ||= USER_DIR
   process.env.BAILONGMA_RESOURCES_DIR ||= RESOURCE_ROOT
   process.env.BAILONGMA_PORT = String(port)
+  validatePackagedNativeModules()
   await import(pathToFileURL(BACKEND_ENTRY).href)
 }
 

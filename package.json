@@ -64,10 +64,14 @@
     "productName": "Bailongma",
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "npmRebuild": false,
-    "asar": true,
+    "asar": {
+      "smartUnpack": false
+    },
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/better-sqlite3/build/Release/*.node",
       "**/node_modules/@huggingface/transformers/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/@img/sharp-*/**",
       "**/node_modules/onnxruntime-node/**",
       "**/node_modules/sherpa-onnx-node/**",
       "**/node_modules/sherpa-onnx-win-x64/**",

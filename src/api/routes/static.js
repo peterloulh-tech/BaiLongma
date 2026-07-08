@@ -13,6 +13,7 @@ const SYSTEM_PROMPT_PATH = paths.systemPromptHtml
 const ACTIVATION_PATH = paths.activationHtml
 const TURN_TRACE_PATH = paths.turnTraceHtml
 const BRAIN_UI_ASSET_ROOT = paths.brainUiAssetRoot
+const SITE_ICON_PATH = path.join(paths.resourcesDir, 'build', 'icon.png')
 const SCENE_SHELL_ASSET_ROOT = path.join(paths.resourcesDir, 'src', 'ui', 'scene-shell')
 const TERMINAL_STREAM_PATH = path.join(paths.resourcesDir, 'src', 'ui', 'terminal-stream', 'index.html')
 const D3_VENDOR_PATH = path.join(paths.resourcesDir, 'node_modules', 'd3', 'dist', 'd3.min.js')
@@ -22,6 +23,26 @@ function serveHtml(res, filePath, notFoundText) {
     const html = fs.readFileSync(filePath, 'utf-8')
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
     res.end(html)
+  } catch {
+    res.writeHead(404)
+    res.end(notFoundText)
+  }
+}
+
+function serveFile(res, filePath, notFoundText, cacheControl = 'no-cache') {
+  try {
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) {
+      res.writeHead(404)
+      res.end(notFoundText)
+      return
+    }
+    res.writeHead(200, {
+      'Content-Type': contentTypeFor(filePath),
+      'Content-Length': stat.size,
+      'Cache-Control': cacheControl,
+    })
+    fs.createReadStream(filePath).pipe(res)
   } catch {
     res.writeHead(404)
     res.end(notFoundText)
@@ -104,6 +125,11 @@ export async function handleStaticRoutes(req, res, url) {
 
   if (req.method === 'GET' && (url.pathname === '/site' || url.pathname === '/site.html')) {
     serveHtml(res, WEBSITE_PATH, 'website.html not found')
+    return true
+  }
+
+  if (req.method === 'GET' && url.pathname === '/site-assets/icon.png') {
+    serveFile(res, SITE_ICON_PATH, 'site icon not found', 'public, max-age=31536000, immutable')
     return true
   }
 
