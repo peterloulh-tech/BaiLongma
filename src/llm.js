@@ -557,6 +557,77 @@ function buildToolLogDetail(args = {}, result = '') {
   return argPreview || resultPreview
 }
 
+function makeDeferredOutboundResult(args = {}, latestOutbound = null) {
+  const target = String(args.target_id || '')
+  const sent = latestOutbound
+    ? `The immediately preceding message to ${latestOutbound.targetId} was delivered at ${latestOutbound.sentAt}: “${latestOutbound.content.slice(0, 240)}”`
+    : 'A preceding outbound message in this same model response was delivered.'
+  return JSON.stringify({
+    ok: false,
+    tool: 'send_message',
+    skipped: 'outbound_reconsideration_required',
+    target_id: target,
+    reason: `${sent} This additional message was planned before that delivery result existed, so it was not sent. Read the delivered-message fact and make a fresh, context-based decision in the next step; silence is the correct choice when nothing materially changed.`,
+  })
+}
+
+const TICK_EVIDENCE_EXCLUDED_TOOLS = new Set([
+  'send_message', 'express', 'set_tick_interval', 'set_task', 'complete_task',
+  'recall_memory', 'search_memory', 'probe_memory', 'find_tool',
+  'upsert_memory', 'skip_recognition', 'skip_consolidation', 'ui_set', 'voice_retire',
+])
+
+function toolAddsTickEvidence(name, result) {
+  return !TICK_EVIDENCE_EXCLUDED_TOOLS.has(name) && !isToolFailure(result)
+}
+
+function buildTickRoundContext(tickState, toolRound) {
+  if (!tickState) return ''
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - tickState.startedAtMs) / 1000))
+  const lines = [
+    `[outer heartbeat] TICK #${tickState.number} (${tickState.id}) is still active.`,
+    `This is internal tool-loop round ${toolRound}, not heartbeat #${toolRound}. No new scheduler heartbeat has occurred; ${elapsedSeconds}s have elapsed continuously inside this one TICK.`,
+    `Evidence revision in this TICK: ${tickState.evidenceVersion}. Tool results can be evidence, but they never create another heartbeat or make 10 seconds pass.`,
+  ]
+  if (tickState.outboundByTarget.size) {
+    lines.push('Messages already delivered in this same TICK:')
+    for (const item of tickState.outboundByTarget.values()) {
+      lines.push(`- to ${item.targetId}, tool-loop round ${item.toolRound}, evidence revision ${item.evidenceVersion}: "${item.content.slice(0, 260)}"`)
+    }
+    lines.push('Do not relabel a tool-loop round as the next heartbeat. Another message to the same recipient requires concrete new evidence after the earlier delivery; otherwise conclude silently.')
+  }
+  return lines.join('\n')
+}
+
+function makeSameTickNoEvidenceResult(args = {}, previousOutbound = null, tickState = null) {
+  const previous = previousOutbound
+    ? `A message to ${previousOutbound.targetId} was already delivered in tool-loop round ${previousOutbound.toolRound}: "${previousOutbound.content.slice(0, 240)}".`
+    : 'A message to this recipient was already delivered in the current TICK.'
+  return JSON.stringify({
+    ok: false,
+    tool: 'send_message',
+    skipped: 'same_tick_no_new_evidence',
+    target_id: String(args.target_id || ''),
+    tick_id: tickState?.id || '',
+    reason: `${previous} This is still the same outer TICK, not a later heartbeat. No qualifying new tool evidence has appeared since that delivery, so this message was not sent. End silently or first obtain and assess new evidence.`,
+  })
+}
+
+function buildPostSendNudge(outboundMessages = [], tickState = null) {
+  const latest = outboundMessages.at(-1)
+  if (!latest) {
+    return 'Message sent. Default action: end the round now. Do not send another message unless genuinely new substantive information appears.'
+  }
+  return [
+    'Communication reality check:',
+    `You have already delivered this message to ${latest.targetId} at ${latest.sentAt}:`,
+    `“${latest.content.slice(0, 500)}”`,
+    tickState ? `This is still outer TICK #${tickState.number}; the send happened in tool-loop round ${latest.toolRound}.` : '',
+    'Treat that delivery as a completed fact, not an unfinished task. Compare the current evidence with what the recipient already knows before considering another message.',
+    'Default action: end the round silently. Only send again if new external evidence, task progress, risk, or a new user message makes another message useful to the recipient.',
+  ].filter(Boolean).join('\n')
+}
+
 function shouldPersistActionLog(toolName) {
   return false
 }
@@ -821,7 +892,7 @@ function isCloserPattern(content) {
 //   refresh agent 的上下文"，**不**期望模型回复用户。当 silentSignal=true 时，
 //   runtime 直接拦截 send_message 调用（不让它真投递），并在工具结果里告知
 //   "本轮是 silent 系统信号，不要 send_message"，让模型从这次拒绝里学到边界。
-export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false, _streamOnceForTest = null }) {
+export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false, _streamOnceForTest = null, _executeToolForTest = null }) {
   const strictEvaluation = toolContext?.strictEvaluation || null
   const toolPromptHints = toolContext?.toolPromptHints || null
   const toolSchemas = getToolSchemas(filterStrictEvaluationTools(tools, strictEvaluation), { toolPromptHints })
@@ -834,6 +905,22 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   const deliverInstruction = localReply
     ? 'give the user your final reply now as plain text — in this local channel your message text reaches the user directly (and is spoken aloud on voice), you do NOT need to call send_message'
     : 'call send_message now to deliver your final reply to the user'
+
+  // Only a user-authored turn has a plain-text reply body by protocol. During a
+  // heartbeat, ordinary text is private working output; the model must call
+  // send_message when it independently decides to communicate. Do not infer
+  // external intent from heartbeat prose or manufacture a fallback send.
+  const allowPlainTextFallback = Boolean(mustReply && toolContext?.outputContract !== 'explicit_send_only')
+  const runTool = _executeToolForTest || executeTool
+  const tickState = toolContext?.tickContext
+    ? {
+        id: String(toolContext.tickContext.id || 'tick'),
+        number: Number(toolContext.tickContext.number) || 0,
+        startedAtMs: Number(toolContext.tickContext.startedAtMs) || Date.now(),
+        evidenceVersion: 0,
+        outboundByTarget: new Map(),
+      }
+    : null
 
   const messages = Array.isArray(inputMessages) && inputMessages.length > 0
     ? inputMessages.map(item => ({ ...item }))
@@ -858,6 +945,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
     silentSignal,
     localReply,
     mustReply,
+    outputContract: toolContext?.outputContract || (mustReply ? 'user_reply' : 'internal'),
     tools,
   })
 
@@ -891,6 +979,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // 模式）+ "已发实质消息"前置条件（length>=15 且非 closer）控制——纯短回复"好的"/"已开"
   // 不命中 pattern，不会被误拦。
   const turnSendHistory = new Map()
+  // Facts about messages that were actually delivered in this callLLM run. These
+  // are injected after every tool round so the next model decision starts from
+  // reality rather than from an intention to send.
+  const outboundMessages = []
   // 本 turn 是否已替模型"应过一声"（耗时工具即时回应）——保证一个 turn 只发一次。
   let ackSent = false
   // 本 turn 是否播放过音乐/视频——之后模型补的播放确认短收尾会被改成单个表情（"放好不用说"，
@@ -903,6 +995,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   for (let round = 0; round < TOOL_LOOP_LIMITS.maxRounds; round++) {
     throwIfAborted(signal)
 
+    if (tickState) {
+      messages.push({ role: 'user', content: buildTickRoundContext(tickState, round) })
+    }
     // 本轮开始时 messages 的长度 = 本轮模型看到的上下文边界。messages 在一个 turn 内严格
     // append-only，所以前端用 final messages.slice(0, inputOffset) 即可精确还原"本轮看到了什么"。
     const roundInputOffset = messages.length
@@ -1063,6 +1158,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         console.log(`[工具警告] ${tc.name} 参数为空`)
       }
       let result
+      let outboundSent = false
       let closerSuppressed = false
       let silentSignalSuppressed = false
       let mediaCloserSuppressed = false
@@ -1080,6 +1176,14 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
         console.log(`[strict evaluation] 拦截 forbidden tool ${tc.name}`)
       } else {
+        const priorTickOutbound = tc.name === 'send_message'
+          ? tickState?.outboundByTarget.get(normalizedArgs.target_id)
+          : null
+        if (priorTickOutbound && priorTickOutbound.evidenceVersion === tickState.evidenceVersion) {
+          result = makeSameTickNoEvidenceResult(normalizedArgs, priorTickOutbound, tickState)
+          recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
+          console.log(`[same TICK outbound] blocked repeat to ${normalizedArgs.target_id} without new evidence`)
+        } else {
         // Silent system signal 拦截：本轮是 silent APP_SIGNAL（如 confirm_security_change /
         //   cancel_security_change / app:saveState 等），系统只是在悄悄 refresh agent 上下文，
         //   不期望模型回复用户。模型如果违反这个约束调 send_message → 直接拒绝，让它从工具
@@ -1158,7 +1262,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             ackSent = true
             try {
               const ackArgs = { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) }
-              const ackResult = await executeTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
+              const ackResult = await runTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
               // 关键：ack 不置 delivered。ack 是"承诺稍后汇报"，不是汇报本身——
               // 把它当投递会让文末兜底（!delivered 守卫）跳过，模型生成的最终汇报被静默丢弃。
               // 实测（2026-06-10 排障四连静默）：r19 已生成完整收尾汇报，因 ack 置了 delivered
@@ -1172,16 +1276,36 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           }
           // 真正开始执行前通知 UI —— 让用户知道当前停留在哪一步的工具上
           onToolExecute?.(tc.name, normalizedArgs)
-          result = await executeTool(tc.name, normalizedArgs, { ...toolContext, signal })
+          result = await runTool(tc.name, normalizedArgs, { ...toolContext, signal })
           let deliveredByToolResult = false
           try {
             const parsedResult = JSON.parse(String(result || '{}'))
             deliveredByToolResult = parsedResult?.delivered === true && parsedResult?.message_sent === true
           } catch {}
           recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
+          if (tickState && toolAddsTickEvidence(tc.name, result)) {
+            tickState.evidenceVersion += 1
+          }
           // 单一权威：一次未被 silent/closer 拦截、未熔断的 send_message 真正执行过 →
           //   用户确实收到了回复。这是 delivered 唯一被置 true 的地方（除文末协议兜底外）。
           if (tc.name === 'send_message' && !strictSuppressed && !isToolFailure(result)) delivered = true
+          outboundSent = tc.name === 'send_message'
+            && !strictSuppressed
+            && !silentSignalSuppressed
+            && !closerSuppressed
+          && !mediaCloserSuppressed
+          && !isToolFailure(result)
+          if (outboundSent) {
+            const outbound = {
+              targetId: String(normalizedArgs.target_id || ''),
+              content: String(normalizedArgs.content || ''),
+              sentAt: new Date().toISOString(),
+              toolRound: round,
+              evidenceVersion: tickState?.evidenceVersion ?? 0,
+            }
+            outboundMessages.push(outbound)
+            if (tickState && outbound.targetId) tickState.outboundByTarget.set(outbound.targetId, outbound)
+          }
           if (deliveredByToolResult && !strictSuppressed) {
             delivered = true
             toolDeliveredFinalReply = true
@@ -1189,6 +1313,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           // find_tool 动态装载：把搜到的工具 schema 当场注入本轮 toolSchemas（数组原地 push，
           // 下一轮 streamOnceWithRetry 即带上），模型下一步就能直接调用搜出来的工具。
           if (tc.name === 'find_tool') injectFoundToolSchemas(result, toolSchemas, strictEvaluation, toolPromptHints)
+        }
         }
       }
       throwIfAborted(signal)
@@ -1240,11 +1365,19 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       console.log(`[工具结果] ${tc.name}: ${result.slice(0, 100)}`)
       if (onToolCall) onToolCall(tc.name, normalizedArgs, result)
       lastToolResult = { name: tc.name, args: normalizedArgs, result }
-      return { id: tc.id, name: tc.name, args: normalizedArgs, result, stopReason }
+      return { id: tc.id, name: tc.name, args: normalizedArgs, result, stopReason, outboundSent }
     }
 
+    const deferredOutboundTargets = new Set()
     for (let callIndex = 0; callIndex < effectiveToolCalls.length;) {
       const firstPrepared = prepareToolCall(effectiveToolCalls[callIndex])
+      if (firstPrepared.tc.name === 'send_message' && deferredOutboundTargets.has(firstPrepared.normalizedArgs.target_id)) {
+        const result = makeDeferredOutboundResult(firstPrepared.normalizedArgs, outboundMessages.at(-1))
+        toolResults.push({ id: firstPrepared.tc.id, name: firstPrepared.tc.name, result })
+        if (onToolCall) onToolCall(firstPrepared.tc.name, firstPrepared.normalizedArgs, result)
+        callIndex += 1
+        continue
+      }
       const canParallelize = isParallelSafeTool(firstPrepared.tc.name, firstPrepared.normalizedArgs)
       const remainingBudget = TOOL_LOOP_LIMITS.maxTotalCalls - toolLoopState.totalCalls
 
@@ -1275,12 +1408,14 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         } else {
           const result = await runPreparedToolCall(firstPrepared)
           toolResults.push({ id: result.id, name: result.name, result: result.result })
+          if (result.outboundSent) deferredOutboundTargets.add(result.args.target_id)
           toolLoopStopReason = result.stopReason
           callIndex += 1
         }
       } else {
         const result = await runPreparedToolCall(firstPrepared)
         toolResults.push({ id: result.id, name: result.name, result: result.result })
+        if (result.outboundSent) deferredOutboundTargets.add(result.args.target_id)
         toolLoopStopReason = result.stopReason
         callIndex += 1
       }
@@ -1322,7 +1457,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         messages.push({
           role: 'user',
           content: sentMessage
-            ? `Tool execution results:\n${resultSummary}\n\nMessage sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助"), a follow-up check ("还有什么需要吗"), or to restate your reply — those are pure noise. Do NOT narrate your decision to stop either: "已经回复过了，不需要再发" / "安静等待" is internal reasoning, not a message — never send it. Only call send_message again if there is genuinely NEW substantive information the user does not yet know.`
+            ? `Tool execution results:\n${resultSummary}\n\n${buildPostSendNudge(outboundMessages, tickState)}`
             : toolLoopStopReason
               ? buildToolLoopStopNudge(toolLoopStopReason, lastToolResult)
               : `Tool execution results:\n${resultSummary}\n\nContinue completing the task. If this is a user message and the information is sufficient, ${deliverInstruction}. If a tool failed, explain the failure and available clues; do not end silently.`,
@@ -1366,7 +1501,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         // 仅保留"工具结果回来后补刀"和"不同收件人"的合法口子。
         messages.push({
           role: 'user',
-          content: 'Message sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助", "祝你...好"), a follow-up check ("还有什么需要吗", "明白了吗"), or to restate what you already said. Those are pure noise — the user sees them as filler and the conversation degrades.\n\nAbove all, do NOT narrate your own decision to stop. Lines like "已经和用户打过招呼了，不需要再发第二条" / "安静等待" / "I\'ll stay quiet now" are INTERNAL REASONING, not messages — they belong in your thinking and must never be sent through send_message or written as a reply. If you have decided not to reply, the correct way to express that is to send nothing at all.\n\nOnly call send_message again if you have genuinely NEW substantive information the user does not yet know — e.g., a tool result that came back after your reply and materially changes the answer, or a different recipient that also needs to hear from you.',
+          content: buildPostSendNudge(outboundMessages, tickState),
         })
       } else if (mustReply) {
         // 层 3：步数跨过阈值仍未投递 → 先插一次"不确定回退"软检查点，引导退一步重审计划，
@@ -1408,7 +1543,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // send_message 时卡死被 watchdog 掐），这条答案不应凭空丢掉——「你有意识吗」事故就是这么蒸发的。
   // 此时原 signal 已废，复用它会让 send_message 立刻 AbortError 失败，所以中断兜底改走一条全新的、
   // 带 30s 超时的干净 signal，确保已生成的答案仍能送达。
-  if (mustReply && !silentSignal && !delivered) {
+  if (allowPlainTextFallback && !silentSignal && !delivered) {
     // 内容来源：优先本轮累积的 allContent；若它已被 nudge 清空（草稿挪进了 messages），
     // 退回 salvageableReply —— 这正是中断/卡死时把"已生成但没发出"的答案救回来的关键。
     let fallbackContent = stripProtocolMarkersForDelivery(allContent.trim() ? allContent : salvageableReply)
@@ -1439,7 +1574,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       try {
         const fbArgs = { target_id: fallbackTarget, content: fallbackContent }
         // source:'fallback' 让 tool-audit 把这条 action_log 标记为协议兜底（不变量 #8）。
-        const fbResult = await executeTool('send_message', fbArgs, { ...toolContext, signal: fbSignal, source: 'fallback' })
+        const fbResult = await runTool('send_message', fbArgs, { ...toolContext, signal: fbSignal, source: 'fallback' })
         // 兜底也是"真正执行过的 send_message"：置 delivered，并触发与正常路径同样的
         //   onToolCall 回调（语音渠道自动 TTS、UI tool_call 事件、toolCallLog 登记都在那里）。
         //   __fallback 标记仅给 onToolCall 用于遥测分类；executeTool 收到的是干净的 fbArgs。

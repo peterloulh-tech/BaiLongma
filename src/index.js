@@ -459,8 +459,12 @@ function buildToolContextForProcess(msg, injection) {
   const voiceReply = msg?.notificationVoiceReply === true
     || msg?.voiceReply === true
     || isVoiceChannel(currentChannel)
+  const currentTargetId = msg?.notificationTargetId
+    || msg?.reminderTargetId
+    || msg?.fromId
+    || (!msg ? PRIMARY_USER_ID : null)
   const base = buildToolContext({
-    currentTargetId: msg?.notificationTargetId || msg?.reminderTargetId || msg?.fromId || null,
+    currentTargetId,
     conversationWindow: injection.conversationWindow || [],
     includeRecentPartners: true,
   })
@@ -817,6 +821,7 @@ async function projectWeatherSurfaceForTurn(message = '') {
 
 async function runTurn(input, label, msg = null) {
   const sessionRef = newSessionRef()
+  const turnStartedAtMs = Date.now()
   const isTick = !msg
   const silentSignal = msg?.silent === true
   if (isTick) state.tickCounter += 1
@@ -984,6 +989,7 @@ async function runTurn(input, label, msg = null) {
         startupSelfCheckActive: !!state.startupSelfCheck?.active,
         awakeningTicks: getAwakeningTicks(),
         delegationDiscovery: buildDelegationDiscoveryContext() || '',
+        tickerStatus: getTickerStatus(),
       }))
     }
     if (fastUserPath) {
@@ -1278,6 +1284,17 @@ async function runTurn(input, label, msg = null) {
     // Autonomy changes who makes the semantic decision, not the authority
     // boundary. High-risk tools still require an explicit user-driven turn.
     toolContext.autonomous = isTick
+    toolContext.tickContext = isTick
+      ? {
+          id: `${sessionRef}:tick-${state.tickCounter}`,
+          number: state.tickCounter,
+          startedAtMs: turnStartedAtMs,
+        }
+      : null
+    // A user-authored turn has a reply body by definition. A heartbeat does not:
+    // its plain text is private working output, and only an explicit send_message
+    // tool call represents the model's decision to communicate externally.
+    toolContext.outputContract = isTick ? 'explicit_send_only' : 'user_reply'
     toolContext.allowHighRiskAutonomy = false
     toolContext.strictEvaluation = strictEvaluation
     // 审视分身取证：把本轮正在累积的工具日志数组引用挂进 toolContext。execReviewWork 在循环中途
@@ -1542,9 +1559,14 @@ async function runTurn(input, label, msg = null) {
   const thinkMatch = response.match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/i)
   const jarvisThink = thinkMatch ? thinkMatch[1].trim() : ''
   const jarvisText = response.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim()
+  // In a heartbeat, uncommitted plain text is private working output, not an
+  // assistant message or a durable experience. Tool calls (including an
+  // explicit send_message) remain available to the recognizer as real evidence.
+  const recognizerResponse = isTick ? '' : jarvisText
 
-  // Silent tick with no tool calls = nothing happened worth remembering; skip LLM call entirely.
-  if (isTick && toolCallLog.length === 0 && !jarvisText) {
+  // A heartbeat with no executed tool has no externally verifiable experience
+  // to recognize. Its private text is retained in turn trace only.
+  if (isTick && toolCallLog.length === 0) {
     emitEvent('memories_written', { count: 0, memories: [] })
     return
   }
@@ -1554,7 +1576,7 @@ async function runTurn(input, label, msg = null) {
   enqueueTurnForRecognition({
     userMessage: input,
     jarvisThink,
-    jarvisResponse: jarvisText,
+    jarvisResponse: recognizerResponse,
     toolCallLog,
     task: state.task,
     sessionRef,

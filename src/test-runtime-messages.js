@@ -68,8 +68,8 @@ const messages = buildLLMMessages({
   conversationWindow,
   input: '[ID:000001] 2026-05-25T10:02:13+08:00 [WECHAT_CLAWBOT] 那现在呢？',
   msg: currentMsg,
-  recentActions: [{ ts: '2026-05-25T10:01:30+08:00', summary: 'read_file(foo)' }],
-  actionLog: [{ timestamp: '2026-05-25T10:01:40+08:00', tool: 'read_file', summary: 'read_file(foo)', detail: 'ok' }],
+  recentActions: [{ ts: '2026-05-25T02:01:30.000Z', summary: 'read_file(foo)' }],
+  actionLog: [{ timestamp: '2026-05-25T02:01:40.000Z', tool: 'read_file', summary: 'read_file(foo)', detail: 'ok' }],
   lastToolResult: { name: 'read_file', args: { path: 'foo.txt' }, result: 'hello world' },
   taskSteps: [{ text: '检查文件', status: 'done', note: 'ok' }, { text: '回复用户', status: 'pending' }],
   batteryBlock: 'Battery: 80%',
@@ -90,6 +90,8 @@ assert(messages[1].content.includes('Current-turn intent check'), 'runtime conte
 assert(messages[1].content.includes('role="assistant"'), 'conversation metadata includes assistant role')
 assert(messages[1].content.includes('salience="last_assistant_reply"'), 'conversation metadata marks the last assistant reply')
 assert(messages[1].content.includes('channel_switched_from="TUI"'), 'conversation metadata marks channel switch')
+assert(messages[1].content.includes('- 10:01 read_file(foo)'), 'UTC recent action time is rendered in local time')
+assert(!messages[1].content.includes('- 02:01 read_file(foo)'), 'UTC recent action time is not rendered as raw UTC clock')
 
 const historicalUser = messages.find(m => m.content.includes('先在本地看一下'))
 assert(historicalUser && !historicalUser.content.includes('<context>CTX</context>'), 'historical user message is not prefixed with current context')

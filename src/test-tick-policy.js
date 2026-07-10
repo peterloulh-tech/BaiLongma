@@ -18,6 +18,9 @@ const normal = buildAutonomousTickDirections()
 assert(normal.includes('no obligation to act, speak, or remain passive'), 'ordinary Tick has no forced behavioral default')
 assert(normal.includes('make your own situational judgment'), 'ordinary Tick delegates semantic judgment to the model')
 assert(normal.includes('use find_tool'), 'ordinary Tick preserves on-demand capability discovery')
+assert(normal.includes('private working text'), 'ordinary Tick distinguishes private text from external communication')
+assert(normal.includes('calling send_message'), 'ordinary Tick lets the model explicitly choose external communication')
+assert(normal.includes('do not narrate or justify silence'), 'ordinary Tick defines silent completion without semantic runtime filtering')
 assert(!normal.includes('23:00') && !normal.includes('Things you can proactively do'), 'ordinary Tick has no fixed time rule or action menu')
 assert(!normal.includes('HARD RULE') && !normal.includes('forbidden'), 'ordinary Tick contains no behavioral hard-rule wording')
 
@@ -31,6 +34,13 @@ assert(!startup.includes('early awakening period'), 'startup diagnostic context 
 const awakening = buildAutonomousTickDirections({ awakeningTicks: 3 })
 assert(awakening.includes('not a prescribed exploration sequence'), 'awakening no longer forces sequential exploration')
 assert(awakening.includes('exploration, reflection, task work, communication, or silence'), 'awakening leaves the outcome to model judgment')
+
+const customCadence = buildAutonomousTickDirections({
+  tickerStatus: { active: true, seconds: 10, ttl: 7, reason: 'user asked for fast feelings', revision: 3 },
+})
+assert(customCadence.includes('10s interval, 7 heartbeat(s) remaining'), 'custom ticker status is visible to Tick context')
+assert(customCadence.includes('not an instruction to speak'), 'custom ticker status stays scheduling context')
+assert(customCadence.includes('not an instruction to speak or to confirm the setting'), 'custom ticker status does not ask the model to repeat a no-op change')
 
 const discovery = buildAutonomousTickDirections({ delegationDiscovery: '[available collaborators: Codex]' })
 assert(discovery.endsWith('[available collaborators: Codex]'), 'neutral discovery context can be appended without changing policy')

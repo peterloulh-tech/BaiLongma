@@ -1,4 +1,5 @@
 import { normalizeChannel, isSystemSignalRow } from './channel.js'
+import { formatLocalClock, formatLocalDateMinute } from '../time.js'
 
 function xmlAttr(value) {
   return String(value ?? '')
@@ -77,8 +78,7 @@ export function formatConversationMessage(row, currentMsg = null, prevChannel = 
     }
   }
 
-  // Truncate timestamp to minute precision (drop seconds and timezone)
-  const ts = row.timestamp ? row.timestamp.slice(0, 16).replace('T', ' ') : ''
+  const ts = formatLocalDateMinute(row.timestamp)
   const rawChannel = row.channel || currentMsg?.channel || ''
 
   // 保留 currentMsg 回退语义：row.channel 为空时回退到 currentMsg?.channel（同 rawChannel）。
@@ -114,9 +114,29 @@ export function formatTaskSteps(taskSteps = []) {
 function buildTickSystemPrompt(systemPrompt, input) {
   return `[heartbeat tick - no new user message]
 This is an internal L2 heartbeat tick, not a user turn. No user is speaking right now. Read the runtime context and conversation history normally, then independently choose the appropriate outcome; the heartbeat itself does not require action, communication, or silence.
+Delivery boundary for this TICK: it has no incoming local-user channel. Plain assistant text is private working output and is delivered to nobody. If you decide that someone should receive a message, call send_message explicitly (including for TUI delivery); otherwise end silently.
 Tick payload: ${input}
 
 ${systemPrompt}`
+}
+
+function buildRecentOutboundSnapshot(conversationWindow = []) {
+  const sent = (Array.isArray(conversationWindow) ? conversationWindow : [])
+    .filter(row => row?.role === 'jarvis' && String(row.content || '').trim())
+    .slice(-3)
+  if (sent.length === 0) return ''
+
+  const lines = sent.map(row => {
+    const time = formatLocalClock(row.timestamp)
+    const target = row.to_id || 'the recipient'
+    const content = String(row.content || '').replace(/\s+/g, ' ').trim().slice(0, 360)
+    return `- ${time} -> ${target}: “${content}”`
+  })
+  return [
+    'Recent verified outbound messages (these are things you have already said, not pending work):',
+    ...lines,
+    'Before sending during this heartbeat, compare current evidence with what the recipient already knows. A new message is useful only when new facts, progress, risk, or a new user message makes it useful; otherwise silence is the complete action.',
+  ].join('\n')
 }
 
 function buildIntentCheckContext() {
@@ -131,7 +151,7 @@ function hasPriorAssistantReply(rows, currentRowIndex) {
   return false
 }
 
-export function buildRuntimeContextMessages({ contextBlock = '', recentActions = [], actionLog = [], lastToolResult = null, taskSteps = [], batteryBlock = '', conversationMetadata = '', intentCheck = '', role = 'user' } = {}) {
+export function buildRuntimeContextMessages({ contextBlock = '', recentActions = [], actionLog = [], lastToolResult = null, taskSteps = [], batteryBlock = '', outboundSnapshot = '', conversationMetadata = '', intentCheck = '', role = 'user' } = {}) {
   const parts = []
 
   if (contextBlock) {
@@ -147,13 +167,13 @@ export function buildRuntimeContextMessages({ contextBlock = '', recentActions =
   }
 
   if (recentActions?.length > 0) {
-    const lines = recentActions.map(item => `- ${item.ts?.slice(11, 16) || ''} ${item.summary || ''}`).join('\n')
+    const lines = recentActions.map(item => `- ${formatLocalClock(item.ts)} ${item.summary || ''}`).join('\n')
     parts.push(`Recent assistant actions:\n${lines}\nAvoid immediately repeating the same action unless the current user message asks for it.`)
   }
 
   if (actionLog?.length > 0) {
     const lines = actionLog.slice(-10).map(item => {
-      const time = item.timestamp?.slice(11, 16) || ''
+      const time = formatLocalClock(item.timestamp)
       const detail = item.detail ? `\n  ${item.detail}` : ''
       return `- ${time} ${item.tool || ''} · ${item.summary || ''}${detail}`
     }).join('\n')
@@ -166,6 +186,10 @@ export function buildRuntimeContextMessages({ contextBlock = '', recentActions =
       .join(', ')
     const resultPreview = String(lastToolResult.result || '').slice(0, 500)
     parts.push(`Previous tool result:\n${lastToolResult.name}(${argsSummary}) ->\n${resultPreview}\nAbsorb this result before deciding the next step.`)
+  }
+
+  if (outboundSnapshot) {
+    parts.push(outboundSnapshot)
   }
 
   if (conversationMetadata) {
@@ -223,6 +247,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
   }]
 
   const rows = Array.isArray(conversationWindow) ? conversationWindow : []
+  const outboundSnapshot = isTick ? buildRecentOutboundSnapshot(rows) : ''
 
   // P0-2：先扫一遍找出所有"过期未答悬念"
   const expiredSet = computeExpiredFollowupSet(rows, currentTopic)
@@ -238,6 +263,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
     lastToolResult,
     taskSteps,
     batteryBlock,
+    outboundSnapshot,
     conversationMetadata,
     intentCheck,
     role: isTick ? 'system' : 'user',

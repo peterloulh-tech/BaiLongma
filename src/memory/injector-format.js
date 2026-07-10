@@ -4,6 +4,8 @@
 // 纯函数，不依赖 DB / 网络 / state——从 injector.js 拆出，便于单独维护与测试。
 // 历史上这些 format* 函数都挤在 injector.js 里，跟检索逻辑耦合不强，是最自然的切口。
 
+import { formatLocalClock } from '../time.js'
+
 function summarizeUISignals(signals = []) {
   if (!signals.length) return ''
   const now = Date.now()
@@ -30,7 +32,7 @@ export function formatTemporalRecall(buckets) {
   if (!buckets || buckets.length === 0) return ''
   return buckets.map(b => {
     const lines = b.memories.map(m => {
-      const timePart = (m.timestamp || '').slice(11, 16) // HH:MM
+      const timePart = formatLocalClock(m.timestamp)
       const star = (m.salience ?? 3) >= 4 ? '★ ' : ''
       const title = m.title ? m.title.replace(/^专注结论：/, '').trim() : ''
       const topicHint = title ? `[${title}] ` : ''
@@ -85,7 +87,7 @@ export function formatMemoriesForPrompt(memories, recallMemories = []) {
 export function formatPrefetchedItems(prefetchedItems = []) {
   if (!prefetchedItems?.length) return ''
   const body = prefetchedItems.map(item => {
-    const fetchedTime = item.fetched_at?.slice(11, 16) || ''
+    const fetchedTime = formatLocalClock(item.fetched_at)
     return `[${item.source}] (${fetchedTime} already fetched)\n${item.content}`
   }).join('\n\n')
   return body + '\n\nThe data above has already been prefetched. Use it directly and phrase the response naturally; do not reuse the same sentence pattern every time.'
