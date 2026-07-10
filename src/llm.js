@@ -10,6 +10,7 @@ import { beginTurn } from './runtime/turn-trace.js'
 import { createMergedAbortSignal } from './capabilities/abort-utils.js'
 import { filterStrictEvaluationTools, isToolForbiddenInStrictEvaluation, makeStrictForbiddenToolResult } from './runtime/strict-evaluation.js'
 import { streamWriteFileArgumentPreview, streamXmlFileWriteArgumentPreview } from './write-file-preview.js'
+import { actionContractToolSucceeded, containsUnsupportedCompletionClaim } from './runtime/action-contract.js'
 
 // 单轮流式调用的「空闲超时」：从开始到第一个 token、以及每两个 token 之间，
 // 若超过这个时长没有任何增量到达，判定为 provider 连接卡死（连接开着却不吐字节）。
@@ -895,6 +896,7 @@ function isCloserPattern(content) {
 export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false, _streamOnceForTest = null, _executeToolForTest = null }) {
   const strictEvaluation = toolContext?.strictEvaluation || null
   const toolPromptHints = toolContext?.toolPromptHints || null
+  const actionContract = toolContext?.actionContract || null
   const toolSchemas = getToolSchemas(filterStrictEvaluationTools(tools, strictEvaluation), { toolPromptHints })
 
   // 本地渠道（语音 / TUI）下纯文本即回复：模型直接产出 text 就算回复，runtime 协议兜底会替它
@@ -968,6 +970,13 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let finalNudgeUsed = false
   let plainTextReplyNudgeUsed = false
   let emptyReplyNudgeUsed = false
+  // `delivered` only means the reply reached a person. These two flags carry
+  // the separate question: did a real tool produce evidence for the requested
+  // external effect?
+  let actionContractSatisfied = false
+  let actionContractAttempted = false
+  let actionContractNudgeCount = 0
+  let actionClaimNudgeUsed = false
   // 层 3：本 turn 是否已发过"不确定回退"软检查点（一 turn 一次，见 buildUncertaintyCheckpointNudge）。
   let uncertaintyNudgeUsed = false
   const toolLoopState = createToolLoopState()
@@ -1075,6 +1084,44 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
 
     // 无工具调用：本轮结束；若工具后空回复，再补一轮明确的最终回复指令。
     if (effectiveToolCalls.length === 0) {
+      // Do not infer an action from prose.  A clear action request carries a
+      // narrow contract from runTurn, and it is satisfied only by a successful
+      // matching tool result.  This deliberately runs before the normal local
+      // plain-text fast path so TUI/voice cannot turn “我已经做好了” into the
+      // only observable outcome.
+      if (mustReply && actionContract && !actionContractSatisfied && !actionContractAttempted) {
+        if (actionContractNudgeCount < 2) {
+          const draft = allContent.trim()
+          if (content) messages.push({ role: 'assistant', content })
+          allContent = ''
+          actionContractNudgeCount += 1
+          messages.push({
+            role: 'user',
+            content: `This user explicitly asked you to ${actionContract.label}. No matching action has actually run. Text, plans, promises, and send_message do NOT satisfy this request. Call one appropriate real action tool now: ${actionContract.requiredTools.join(', ')}. Only after a successful tool result may you say the action is complete. If the action truly cannot be performed, make one relevant attempt and then explain the concrete blocker. Do not repeat this instruction or quote the draft to the user.${INTERNAL_NUDGE_SUFFIX}`,
+          })
+          continue
+        }
+
+        // The provider kept declining to issue an action call. Do not release
+        // its completion-sounding draft as if it were a result.
+        allContent = `我还没有完成「${actionContract.label}」：本轮没有发起所需的实际操作。`
+        break
+      }
+
+      // A matching tool was attempted but failed. A model is allowed to report
+      // that failure, but it must not turn the error into a success claim.
+      if (mustReply && actionContract && actionContractAttempted && !actionContractSatisfied
+          && containsUnsupportedCompletionClaim(allContent) && !actionClaimNudgeUsed) {
+        if (content) messages.push({ role: 'assistant', content })
+        allContent = ''
+        actionClaimNudgeUsed = true
+        messages.push({
+          role: 'user',
+          content: `The requested action (${actionContract.label}) has no successful tool evidence. Your previous wording sounded like completion. Reply truthfully from the tool result: state the failure or limitation, and do not say it is done/created/saved/opened/installed/executed.${INTERNAL_NUDGE_SUFFIX}`,
+        })
+        continue
+      }
+
       // 用户消息回复但只产出了 plain text，完全没调任何工具（包括 send_message）。
       //
       // 与 finalNudge 的区别：finalNudge 处理"调过工具但最后没补 send_message"（sawToolCall=true），
@@ -1163,6 +1210,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       let silentSignalSuppressed = false
       let mediaCloserSuppressed = false
       let strictSuppressed = false
+      let actionContractSendSuppressed = false
       if (stopReason) {
         result = makeToolLoopStoppedResult(tc.name, stopReason)
         console.log(`[工具熔断] ${tc.name}: ${stopReason}`)
@@ -1222,7 +1270,24 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           }
         }
 
-        if (silentSignalSuppressed) {
+        // On external channels send_message is itself a side effect, and used
+        // to let a premature “done” message terminate the whole agent loop.
+        // Suppress it until the requested action has evidence; after a failed
+        // attempt, allow only an honest failure report.
+        const actionContractBlocksSend = tc.name === 'send_message'
+          && actionContract
+          && !actionContractSatisfied
+          && (!actionContractAttempted || containsUnsupportedCompletionClaim(normalizedArgs.content))
+        if (actionContractBlocksSend) {
+          actionContractSendSuppressed = true
+          result = JSON.stringify({
+            ok: false,
+            tool: 'send_message',
+            skipped: 'action_contract_unmet',
+            reason: `The requested action (${actionContract.label}) has no successful matching tool result. Do the action first; do not send a completion claim as a substitute.`,
+          })
+          console.log(`[action contract] suppressed premature send_message for ${actionContract.id}`)
+        } else if (silentSignalSuppressed) {
           result = JSON.stringify({
             ok: false,
             tool: 'send_message',
@@ -1277,6 +1342,12 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           // 真正开始执行前通知 UI —— 让用户知道当前停留在哪一步的工具上
           onToolExecute?.(tc.name, normalizedArgs)
           result = await runTool(tc.name, normalizedArgs, { ...toolContext, signal })
+          if (actionContract?.requiredTools?.includes(tc.name)) {
+            actionContractAttempted = true
+            if (actionContractToolSucceeded(actionContract, tc.name, result)) {
+              actionContractSatisfied = true
+            }
+          }
           let deliveredByToolResult = false
           try {
             const parsedResult = JSON.parse(String(result || '{}'))
@@ -1328,7 +1399,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         const parsedResult = JSON.parse(String(result || '{}'))
         deliveredByToolResultForTurn = parsedResult?.delivered === true && parsedResult?.message_sent === true
       } catch {}
-      if ((tc.name === 'send_message' || deliveredByToolResultForTurn) && !strictSuppressed) {
+      if ((tc.name === 'send_message' || deliveredByToolResultForTurn) && !strictSuppressed && !actionContractSendSuppressed) {
         sentMessage = true
         // 仅对真实发出的（未被 dedup 拦截的）send_message 记录到 turn 历史，避免被拦截的
         // closer / silent signal / media-closer 反过来污染后续判断（已经被拦截的就当没发生）。

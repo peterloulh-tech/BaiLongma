@@ -55,6 +55,7 @@ import { buildAutonomousTickDirections } from './runtime/tick-policy.js'
 import { buildStrictEvaluationContext, filterStrictEvaluationTools, resolveStrictEvaluationMode } from './runtime/strict-evaluation.js'
 import { extractVerbatimPayload, findRecentVerbatimPayload, hasInlineVerbatimPayload, isVerbatimOutputRequest, isVerbatimSetup, isVerbatimStart } from './runtime/verbatim.js'
 import { filterSendMessageForLocalReply, turnNeedsExternalSendMessage } from './runtime/local-reply-tools.js'
+import { classifyActionContract } from './runtime/action-contract.js'
 import { refreshUserProfile } from './profile/infer.js'
 import { isSoftwareInstallRequest } from './software-install-intent.js'
 import { formatTerminalStreamContext } from './terminal-stream.js'
@@ -1281,6 +1282,21 @@ async function runTurn(input, label, msg = null) {
 
     // 3. Call Jarvis LLM (can be interrupted by a new message)
     const toolContext = buildToolContextForProcess(msg, injection)
+    // A reply being delivered is not evidence that a requested side effect
+    // happened.  Keep a narrow action contract for clear imperative requests;
+    // callLLM uses it to require a successful matching tool result before it
+    // accepts a completion-style reply.
+    const actionContract = !isTick && !silentSignal
+      ? classifyActionContract(msg?.content || input || '')
+      : null
+    if (actionContract) {
+      toolContext.actionContract = actionContract
+      emitEvent('action_contract', {
+        id: actionContract.id,
+        label: actionContract.label,
+        required_tools: actionContract.requiredTools,
+      })
+    }
     // Autonomy changes who makes the semantic decision, not the authority
     // boundary. High-risk tools still require an explicit user-driven turn.
     toolContext.autonomous = isTick
@@ -1307,6 +1323,14 @@ async function runTurn(input, label, msg = null) {
     // send_message 才能送达外部平台。省掉 send_message 那一整轮额外 LLM 调用是语音提速的关键。
     localReply = !!msg?.fromId && !silentSignal && !isExternalChannel(msg?.channel)
     let turnTools = resolveTurnTools(injection.tools, { silentSignal, strictEvaluation })
+    // The router is intentionally sparse.  Once a request is confidently an
+    // action, however, do not make execution depend on the model remembering
+    // to discover the relevant tool via find_tool first.
+    if (actionContract) {
+      for (const name of actionContract.requiredTools) {
+        if (!turnTools.includes(name)) turnTools.push(name)
+      }
+    }
     turnTools = filterSendMessageForLocalReply(turnTools, { localReply, silentSignal, input })
     // 语音轮撤掉 send_message（用户决策）：语音回复直接走纯文本 → runtime 协议兜底 executeTool
     // 投递 + 自动 TTS，模型既不必也不能调 send_message，彻底消除"调工具那一轮"的延迟，也不让它
@@ -1395,8 +1419,11 @@ async function runTurn(input, label, msg = null) {
           // speak：语音轮才自动播报——前端据此对正文流逐句流式合成。
           emitEvent('stream_start', {
             mode,
-            plainReply: mode === 'text' && localReply,
-            speak: mode === 'text' && voiceTurn && !silentSignal,
+            // For a verified action request, keep draft prose private until a
+            // matching tool result exists. Otherwise “已经做好了” can appear in
+            // TUI/TTS before the runtime has established that anything ran.
+            plainReply: mode === 'text' && localReply && !actionContract,
+            speak: mode === 'text' && voiceTurn && !silentSignal && !actionContract,
           })
         } else if (event === 'chunk') {
           if (capabilityDemoTurn && curStreamMode === 'text') return
