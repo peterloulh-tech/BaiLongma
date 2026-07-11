@@ -61,10 +61,17 @@ const MEDIA_TOOLS       = ['media_mode', 'music']
 const REMINDER_TOOLS    = ['manage_reminder']
 const PREFETCH_TOOLS    = ['manage_prefetch_task']
 const TICKER_TOOLS      = ['set_tick_interval']
-// Closing the one-time diagnostic is always available. Concrete diagnostic
-// capabilities are intentionally discovered through find_tool after the model
-// decides which checks, if any, are worth running.
-const STARTUP_SELF_CHECK_TOOLS = ['complete_startup_self_check']
+// Startup self-check is a deterministic, local-only three-step flow. Keep its
+// schemas available in its first turn so the fixed validation cannot be skipped
+// or abandoned while waiting for on-demand discovery.
+const STARTUP_SELF_CHECK_TOOLS = [
+  'speak',
+  'complete_startup_self_check',
+  ...FILESYSTEM_TOOLS,
+  ...WEB_TOOLS,
+  ...MEDIA_TOOLS,
+  'hotspot_mode',
+]
 const PERSON_CARD_TOOLS = ['person_card_mode']
 const FOCUS_BANNER_TOOLS = ['focus_banner']
 const TERMINAL_STREAM_TOOLS = ['terminal_stream']
@@ -326,7 +333,7 @@ export function selectTools(ctx = {}) {
   // 跟 search_memory 同一触发条件——任何会需要 search_memory 的场景都可能想用 probe_memory。
   if (senderId || hasRecall || isTick) out.add('probe_memory')
 
-  // 启动自检：这条链路是一次性系统检查，指令里明确要求语音播报、文件读写、热点面板和视频模式。
+  // 启动自检：一次性固定流程，依次检查文件读写、热点面板和视频模式。
   if (startupSelfCheckActive) {
     for (const t of STARTUP_SELF_CHECK_TOOLS) out.add(t)
   }

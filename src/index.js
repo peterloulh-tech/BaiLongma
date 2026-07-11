@@ -173,7 +173,9 @@ const PRIORITY = {
 }
 
 const L2_CONTEXT_HOURS = 24 * 7
-const STARTUP_SELF_CHECK_VERSION = 'v2'
+// Bump when the deterministic first-run validation changes so existing installs
+// receive the new check rather than retaining the previous completed state.
+const STARTUP_SELF_CHECK_VERSION = 'v3'
 const STARTUP_SELF_CHECK_CONFIG_KEY = 'l2_startup_self_check'
 
 // Initialize database
@@ -383,6 +385,19 @@ function ensureStartupSelfCheckState() {
   writeStartupSelfCheckState(next)
   state.startupSelfCheck = next
   return next
+}
+
+function buildStartupSelfCheckDirections(checkState) {
+  if (!checkState?.active) return ''
+  return [
+    `This is the L2 startup self-check flow (${STARTUP_SELF_CHECK_VERSION}). It runs once. Complete every step in order and then call complete_startup_self_check to persist the actual results.`,
+    `[HARD RULE] Do not call send_message and do not emit ordinary assistant text during this flow. Announce status only with speak and ui_set.`,
+    `Use one Scene surface throughout: id="self-check", kind="selfcheck". Update that same id for each running step, then morph it to done before removing it.`,
+    `1. Call speak text="正在检查文件读写能力". Call ui_set({id:"self-check",kind:"selfcheck",intent:"inform",data:{phase:"running",step:1,total:3,name:"文件读写",icon:"📁"}}). Write the current timestamp to self_check.txt in the sandbox root using write_file, then use read_file to read it back and verify the content. Record ok, degraded, or error from the tool evidence.`,
+    `2. Call speak text="正在检查热点面板". Call ui_set({id:"self-check",kind:"selfcheck",intent:"inform",data:{phase:"running",step:2,total:3,name:"热点面板",icon:"🌐"}}). Call hotspot_mode action="show", verify its response, then call hotspot_mode action="hide". Record the actual result.`,
+    `3. Call speak text="正在检查视频模式". Call ui_set({id:"self-check",kind:"selfcheck",intent:"inform",data:{phase:"running",step:3,total:3,name:"视频模式",icon:"🎬"}}). Call web_search once for "bilibili Iron Man JARVIS". Use the first returned Bilibili BV URL only; do not guess a URL or keep searching. Call media_mode with mode="video", action="show", that URL, and autoplay=true; wait about five seconds, then call media_mode with mode="video", action="hide". Record the actual result.`,
+    `Continue even if a step fails. Then call ui_set({id:"self-check",kind:"selfcheck",intent:"inform",data:{phase:"done",results:[{name:"文件读写",status:"ok/error/skipped",note:"..."},{name:"热点面板",status:"ok/error/skipped",note:"..."},{name:"视频模式",status:"ok/error/skipped",note:"..."}],overall:"ok/degraded/error"}}), replacing the placeholder values with the actual outcomes. Call complete_startup_self_check with the same evidence-based result map, then call ui_set with id="self-check" and remove=true.`,
+  ].join('\n')
 }
 
 // Fallback 投递：当模型未按协议调 send_message 时由主循环代为投递。
@@ -986,12 +1001,16 @@ async function runTurn(input, label, msg = null) {
 
     const directions = [...(injection.directions || [])]
     if (isTick) {
-      directions.unshift(buildAutonomousTickDirections({
-        startupSelfCheckActive: !!state.startupSelfCheck?.active,
-        awakeningTicks: getAwakeningTicks(),
-        delegationDiscovery: buildDelegationDiscoveryContext() || '',
-        tickerStatus: getTickerStatus(),
-      }))
+      const startupSelfCheckDirections = buildStartupSelfCheckDirections(state.startupSelfCheck)
+      if (startupSelfCheckDirections) {
+        directions.unshift(startupSelfCheckDirections)
+      } else {
+        directions.unshift(buildAutonomousTickDirections({
+          awakeningTicks: getAwakeningTicks(),
+          delegationDiscovery: buildDelegationDiscoveryContext() || '',
+          tickerStatus: getTickerStatus(),
+        }))
+      }
     }
     if (fastUserPath) {
       directions.unshift('Current turn is a real-time external user message. Understand it quickly and reply directly with send_message. If no slow tool is needed, send exactly one final answer and stop. Use heavier tools only when the reply depends on them. During longer execution, send progress only for meaningful new findings or blockers; do not send an acknowledgement and then a near-duplicate final answer.')

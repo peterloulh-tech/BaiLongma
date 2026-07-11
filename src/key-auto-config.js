@@ -106,7 +106,7 @@ const PROVIDER_RULES = [
       configUpdates: {
         voiceProvider: 'volcengine',
         volcAsrApiKey: key,
-        volcAsrResourceId: 'volc.bigasr.sauc.duration',
+        volcAsrResourceId: 'volc.seedasr.sauc.duration',
       },
     }),
   },
@@ -206,7 +206,7 @@ export function detectAllKeyInfos(currentText) {
         configUpdates: {
           voiceProvider: 'volcengine',
           volcAsrApiKey: key,
-          volcAsrResourceId: 'volc.bigasr.sauc.duration',
+          volcAsrResourceId: 'volc.seedasr.sauc.duration',
         },
       })
     }

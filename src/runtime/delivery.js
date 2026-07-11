@@ -24,7 +24,13 @@ const FOLLOWUP_EN_RE = /\b(should|want|need|shall|would you like|do you want|may
 const OUTBOUND_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
 const OUTBOUND_VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi'])
 const OUTBOUND_MESSAGE_IDEMPOTENCY_MS = 30_000
+// A failed external delivery is not a request to keep knocking on the same
+// door every heartbeat. Keep the failure separately from the short in-flight
+// idempotency claim so the agent can inspect the concrete cause and choose a
+// different recovery path instead of retrying an identical payload.
+export const FAILED_OUTBOUND_RETRY_COOLDOWN_MS = 10 * 60_000
 const recentOutboundClaims = new Map()
+const recentOutboundFailures = new Map()
 
 function pruneOutboundClaims(now = Date.now()) {
   for (const [key, claimedAt] of recentOutboundClaims) {
@@ -32,20 +38,70 @@ function pruneOutboundClaims(now = Date.now()) {
       recentOutboundClaims.delete(key)
     }
   }
+  for (const [key, failure] of recentOutboundFailures) {
+    if (!failure?.failedAt || now - failure.failedAt > FAILED_OUTBOUND_RETRY_COOLDOWN_MS) {
+      recentOutboundFailures.delete(key)
+    }
+  }
 }
 
-function claimOutbound({ toId, channel, externalTargetId, content }) {
-  const now = Date.now()
-  pruneOutboundClaims(now)
-  const key = JSON.stringify([
+export function createOutboundAttemptKey({ toId, channel, externalTargetId, content }) {
+  return JSON.stringify([
     normalizeConversationPartyId(toId || ''),
     String(channel || '').toUpperCase(),
     String(externalTargetId || ''),
     String(content || '').trim(),
   ])
+}
+
+export function getRecentOutboundFailure({ toId, channel, externalTargetId, content, now = Date.now() }) {
+  pruneOutboundClaims(now)
+  const failure = recentOutboundFailures.get(createOutboundAttemptKey({ toId, channel, externalTargetId, content }))
+  if (!failure) return null
+  return {
+    ...failure,
+    retryAfterMs: Math.max(0, FAILED_OUTBOUND_RETRY_COOLDOWN_MS - (now - failure.failedAt)),
+  }
+}
+
+export function recordOutboundFailure({ toId, channel, externalTargetId, content, reason, now = Date.now() }) {
+  const key = createOutboundAttemptKey({ toId, channel, externalTargetId, content })
+  const failure = {
+    failedAt: now,
+    reason: String(reason || 'unknown external delivery failure').slice(0, 1200),
+  }
+  recentOutboundFailures.set(key, failure)
+  return failure
+}
+
+function claimOutbound({ toId, channel, externalTargetId, content }) {
+  const now = Date.now()
+  pruneOutboundClaims(now)
+  const key = createOutboundAttemptKey({ toId, channel, externalTargetId, content })
   if (recentOutboundClaims.has(key)) return false
   recentOutboundClaims.set(key, now)
   return true
+}
+
+function makeDeliveryFailure({
+  targetId = '',
+  channel = '',
+  error = 'external_delivery_failed',
+  reason = '',
+  skipped = '',
+  retryAfterMs = null,
+} = {}) {
+  return JSON.stringify({
+    ok: false,
+    tool: 'send_message',
+    delivered: false,
+    target_id: targetId,
+    channel,
+    ...(skipped ? { skipped } : {}),
+    error,
+    reason: String(reason || 'Message was not delivered.').slice(0, 1200),
+    ...(Number.isFinite(retryAfterMs) ? { retry_after_ms: Math.max(0, Math.round(retryAfterMs)) } : {}),
+  })
 }
 
 export function detectOpenFollowupQuestion(text = '') {
@@ -215,7 +271,7 @@ function resolveDeliveryTarget(resolvedId, channelPref, context = {}) {
 
 // send_message：投递到指定渠道（本地 SSE 或外部平台），并写入 conversations 表
 export async function deliverMessage({ target_id, content = '', channel = 'AUTO', image_path, media_path }, context = {}) {
-  if (!target_id) return '错误：未提供 target_id'
+  if (!target_id) return makeDeliveryFailure({ error: 'missing_target_id', reason: 'No target_id was provided.' })
 
   const resolvedId = normalizeConversationPartyId(target_id)
   if (context.autonomous === true) {
@@ -230,18 +286,43 @@ export async function deliverMessage({ target_id, content = '', channel = 'AUTO'
   }
   const cleanedContent = content == null ? '' : sanitizeAssistantReplyForDelivery(content)
   const media = prepareOutboundMedia({ image_path, media_path })
-  if (media?.error) return `错误：${media.error}`
-  if (!cleanedContent && !media) return '错误：未提供消息内容'
+  if (media?.error) return makeDeliveryFailure({ targetId: resolvedId, error: 'invalid_media', reason: media.error })
+  if (!cleanedContent && !media) return makeDeliveryFailure({ targetId: resolvedId, error: 'missing_content', reason: 'No message content or media was provided.' })
   const outboundContent = formatOutboundConversationContent(cleanedContent, media)
 
   const delivery = resolveDeliveryTarget(resolvedId, channel, context)
-  if (delivery.error) return `错误：${delivery.error}`
+  const requestedChannel = String(channel || 'AUTO').toUpperCase()
+  if (delivery.error) {
+    const previousFailure = getRecentOutboundFailure({ toId: resolvedId, channel: requestedChannel, externalTargetId: '', content: outboundContent })
+    if (previousFailure) {
+      return makeDeliveryFailure({
+        targetId: resolvedId, channel: requestedChannel, skipped: 'repeated_failed_outbound', error: 'previous_delivery_failure',
+        reason: `The identical message was already blocked by a delivery failure: ${previousFailure.reason}. Diagnose or repair routing before retrying.`,
+        retryAfterMs: previousFailure.retryAfterMs,
+      })
+    }
+    recordOutboundFailure({ toId: resolvedId, channel: requestedChannel, externalTargetId: '', content: outboundContent, reason: delivery.error })
+    return makeDeliveryFailure({ targetId: resolvedId, channel: requestedChannel, error: 'delivery_route_unavailable', reason: delivery.error })
+  }
   if (media && (delivery.isLocal || !delivery.externalTargetId || !/^wechat:clawbot:/i.test(delivery.externalTargetId))) {
     const resolvedTarget = delivery.externalTargetId || (delivery.isLocal ? 'TUI' : 'unknown')
     return `错误：媒体消息当前仅支持微信 ClawBot（wechat:clawbot:*），当前解析目标为 ${resolvedTarget}`
   }
 
   const channelLabel = delivery.deliveryChannel || (delivery.isLocal ? 'TUI' : '')
+  const previousFailure = getRecentOutboundFailure({
+    toId: resolvedId,
+    channel: channelLabel,
+    externalTargetId: delivery.externalTargetId || '',
+    content: outboundContent,
+  })
+  if (previousFailure) {
+    return makeDeliveryFailure({
+      targetId: resolvedId, channel: channelLabel, skipped: 'repeated_failed_outbound', error: 'previous_delivery_failure',
+      reason: `The identical message previously failed to reach this recipient: ${previousFailure.reason}. It was not sent again; inspect or repair the channel before retrying.`,
+      retryAfterMs: previousFailure.retryAfterMs,
+    })
+  }
   // This is a short concurrency/idempotency lock, not a semantic cooldown.
   // The model remains free to decide whether a message is valuable; this only
   // prevents an explicit send and a retry/fallback race from delivering the
@@ -252,13 +333,11 @@ export async function deliverMessage({ target_id, content = '', channel = 'AUTO'
     externalTargetId: delivery.externalTargetId || '',
     content: outboundContent,
   })) {
-    return JSON.stringify({
-      ok: false,
-      tool: 'send_message',
-      skipped: 'duplicate_outbound_race',
-      delivered: false,
-      target_id: resolvedId,
+    return makeDeliveryFailure({
+      targetId: resolvedId,
       channel: channelLabel,
+      skipped: 'duplicate_outbound_race',
+      error: 'duplicate_outbound_race',
       reason: 'The identical outbound payload is already being sent or was just sent. Reassess the turn; do not retry the same payload.',
     })
   }
@@ -319,7 +398,22 @@ export async function deliverMessage({ target_id, content = '', channel = 'AUTO'
   }
 
   if (socialResult?.ok) return `${media ? '媒体' : '消息'}已发送至 ${resolvedId}（${socialResult.platform} 已投递）`
-  if (socialResult?.skipped) return `${media ? '媒体' : '消息'}已发送至 ${resolvedId}（社交平台未配置：${socialResult.reason}）`
+  if (socialResult?.skipped) {
+    const reason = socialResult.reason || 'external channel is not configured'
+    recordOutboundFailure({
+      toId: resolvedId,
+      channel: channelLabel,
+      externalTargetId: delivery.externalTargetId || '',
+      content: outboundContent,
+      reason,
+    })
+    return makeDeliveryFailure({
+      targetId: resolvedId,
+      channel: channelLabel,
+      error: 'external_delivery_unavailable',
+      reason: `External channel ${delivery.deliveryChannel || 'unknown'} did not deliver the message: ${reason}. The identical message is now paused so later heartbeats will not retry it automatically.`,
+    })
+  }
   if (socialResult && socialResult.ok === false) {
     const reason = socialResult.reason || socialResult.error || 'unknown'
     // wechat-clawbot 缺 context_token 是该渠道最常见的失败：重启后内存 Map 清空、或用户从未入站。
@@ -328,7 +422,19 @@ export async function deliverMessage({ target_id, content = '', channel = 'AUTO'
     const hint = isMissingContextToken
       ? '（wechat-clawbot 必须先收到该用户的入站消息才能回发；告诉用户先从微信给你发一条任意内容即可。）'
       : ''
-    return `消息发送失败：外部渠道 ${delivery.deliveryChannel || 'unknown'} 投递未成功（${reason}）。${hint}请如实告知用户该消息未送达及原因。`
+    recordOutboundFailure({
+      toId: resolvedId,
+      channel: channelLabel,
+      externalTargetId: delivery.externalTargetId || '',
+      content: outboundContent,
+      reason: `${reason}${hint}`,
+    })
+    return makeDeliveryFailure({
+      targetId: resolvedId,
+      channel: channelLabel,
+      error: 'external_delivery_failed',
+      reason: `External channel ${delivery.deliveryChannel || 'unknown'} did not deliver the message: ${reason}${hint} The identical message is now paused so later heartbeats will not retry it automatically.`,
+    })
   }
   return `消息已发送至 ${resolvedId}${channelLabel ? `（${channelLabel}）` : ''}`
 }

@@ -104,5 +104,18 @@ const heartbeatMessages = buildLLMMessages({
 const heartbeatContext = heartbeatMessages.find(message => String(message.content || '').includes('Recent verified outbound messages'))?.content || ''
 assert(heartbeatContext.includes('First observation.'), 'later heartbeats receive the actual recent outbound content')
 assert(heartbeatContext.includes('otherwise silence is the complete action'), 'later heartbeats receive the context-based communication criterion')
+assert(heartbeatContext.includes('the last conversational move is yours'), 'an unanswered outbound message is explicitly identified as a human pause')
+
+const repliedHeartbeatMessages = buildLLMMessages({
+  systemPrompt: 'heartbeat test',
+  input: 'TICK',
+  isTick: true,
+  conversationWindow: [
+    { role: 'jarvis', to_id: 'ID:000001', content: 'First observation.', timestamp: '2026-07-11T01:28:10+08:00' },
+    { role: 'user', from_id: 'ID:000001', content: 'I saw it.', timestamp: '2026-07-11T01:29:10+08:00' },
+  ],
+})
+const repliedHeartbeatContext = repliedHeartbeatMessages.find(message => String(message.content || '').includes('Recent verified outbound messages'))?.content || ''
+assert(!repliedHeartbeatContext.includes('the last conversational move is yours'), 'a real user reply clears the unanswered-message pause cue')
 
 console.log('PASS outbound awareness keeps sent messages visible before another communication decision')

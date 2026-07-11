@@ -225,10 +225,10 @@ function hasNone(tools, names) {
     isTick: true,
     startupSelfCheckActive: true,
   })
-  assert(hasAll(tools, ['find_tool', 'complete_startup_self_check']),
-    '11) startupSelfCheckActive → discovery + close control available')
-  assert(hasNone(tools, ['speak', 'read_file', 'write_file', 'web_search', 'media_mode', 'hotspot_mode']),
-    `11) startup self-check does not prescribe concrete tools (got: ${tools.join(',')})`)
+  assert(hasAll(tools, [
+    'speak', 'complete_startup_self_check', 'read_file', 'write_file',
+    'web_search', 'media_mode', 'hotspot_mode',
+  ]), '11) startupSelfCheckActive → fixed self-check tool set injected')
 }
 
 // ====== 11b) Worldcup / Hotspot 不再被关键词自动注入 ======

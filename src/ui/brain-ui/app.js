@@ -2119,7 +2119,20 @@ function initTTSSettings() {
   const testBtn     = document.getElementById("tts-test-btn");
   const testStatus  = document.getElementById("tts-test-status");
   const fxToggle    = document.getElementById("tts-fx-toggle");
+  const doubaoKeyInput = document.getElementById("tts-doubao-key");
+  const doubaoKeyToggle = document.getElementById("tts-doubao-key-toggle");
   if (!providerSel) return;
+
+  let doubaoKeyVisible = false;
+  function setDoubaoKeyVisible(visible) {
+    doubaoKeyVisible = Boolean(visible);
+    if (doubaoKeyInput) doubaoKeyInput.type = doubaoKeyVisible ? "text" : "password";
+    if (doubaoKeyToggle) {
+      doubaoKeyToggle.setAttribute("aria-label", doubaoKeyVisible ? "隐藏 API Key" : "显示 API Key");
+      doubaoKeyToggle.title = doubaoKeyVisible ? "隐藏 API Key" : "显示 API Key";
+    }
+  }
+  doubaoKeyToggle?.addEventListener("click", () => setDoubaoKeyVisible(!doubaoKeyVisible));
 
   // 流式合成开关（默认开）：纯播放行为，存在 localStorage
   const streamingToggle = document.getElementById("tts-streaming-toggle");
@@ -2259,12 +2272,9 @@ function initTTSSettings() {
     activeTTSVoiceId = voiceSel?.value || tts?.ttsVoiceId || null;
     const appidEl = document.getElementById("tts-volcano-appid");
     if (appidEl && tts?.volcanoAppId?.value) appidEl.value = tts.volcanoAppId.value;
-    const doubaoAppIdEl = document.getElementById("tts-doubao-appid");
-    if (doubaoAppIdEl && tts?.doubaoAppId?.value) doubaoAppIdEl.value = tts.doubaoAppId.value;
+    if (doubaoKeyInput) doubaoKeyInput.value = typeof tts?.doubaoKey?.value === "string" ? tts.doubaoKey.value : "";
     const doubaoResourceEl = document.getElementById("tts-doubao-resource");
     if (doubaoResourceEl && tts?.doubaoResourceId) doubaoResourceEl.value = tts.doubaoResourceId;
-    const doubaoStyleEl = document.getElementById("tts-doubao-style");
-    if (doubaoStyleEl && tts?.doubaoStyle) doubaoStyleEl.value = tts.doubaoStyle;
     const rateEl = document.getElementById("tts-doubao-rate");
     if (rateEl) {
       const r = Number(tts?.doubaoSpeechRate || 0) || 0;
@@ -2291,14 +2301,8 @@ function initTTSSettings() {
       if (doubaoKey) ttsBody.doubaoKey = doubaoKey;
       const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
       if (doubaoResource) ttsBody.doubaoResourceId = doubaoResource;
-      const doubaoStyleEl2 = document.getElementById("tts-doubao-style");
-      if (doubaoStyleEl2) ttsBody.doubaoStyle = doubaoStyleEl2.value.trim(); // 空＝清除（回中性）
       const rateEl2 = document.getElementById("tts-doubao-rate");
       if (rateEl2) ttsBody.doubaoSpeechRate = rateEl2.value;
-      const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
-      if (doubaoAppId) ttsBody.doubaoAppId = doubaoAppId;
-      const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
-      if (doubaoAccessKey) ttsBody.doubaoAccessKey = doubaoAccessKey;
       const openaiKey = document.getElementById("tts-openai-key")?.value?.trim();
       if (openaiKey) ttsBody.openaiTtsKey = openaiKey;
       const baseURL = document.getElementById("tts-openai-baseurl")?.value?.trim();
@@ -2315,7 +2319,7 @@ function initTTSSettings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ttsBody),
       }).then(() => {
-        ["tts-minimax-key", "tts-doubao-key", "tts-doubao-access-key", "tts-openai-key", "tts-elevenlabs-key", "tts-volcano-token"].forEach(id => {
+        ["tts-minimax-key", "tts-openai-key", "tts-elevenlabs-key", "tts-volcano-token"].forEach(id => {
           const el = document.getElementById(id);
           if (el) el.value = "";
         });
@@ -2337,14 +2341,8 @@ function initTTSSettings() {
         if (doubaoKey) preBody.doubaoKey = doubaoKey;
         const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
         if (doubaoResource) preBody.doubaoResourceId = doubaoResource;
-        const doubaoStyleEl3 = document.getElementById("tts-doubao-style");
-        if (doubaoStyleEl3) preBody.doubaoStyle = doubaoStyleEl3.value.trim();
         const rateEl3 = document.getElementById("tts-doubao-rate");
         if (rateEl3) preBody.doubaoSpeechRate = rateEl3.value;
-        const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
-        if (doubaoAppId) preBody.doubaoAppId = doubaoAppId;
-        const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
-        if (doubaoAccessKey) preBody.doubaoAccessKey = doubaoAccessKey;
         const openaiKey = document.getElementById("tts-openai-key")?.value?.trim();
         if (openaiKey) preBody.openaiTtsKey = openaiKey;
         const elevenKey = document.getElementById("tts-elevenlabs-key")?.value?.trim();
@@ -2429,12 +2427,17 @@ function initTTSSettings() {
   const voiceOutputSelect    = document.getElementById("voice-output-select");
   const voiceRefreshOutputsBtn = document.getElementById("voice-refresh-outputs");
   const voiceOutputStatus    = document.getElementById("voice-output-status");
+  const volcAsrKeyInput      = document.getElementById("voice-volc-apikey");
+  const volcAsrKeyToggle     = document.getElementById("voice-volc-apikey-toggle");
 
   if (!settingsBtn || !overlay) return;
 
   let cachedProviders = null;
   let cachedLlm = null;
   let llmKeyVisible = false;
+  let volcAsrKeyVisible = false;
+  let volcAsrSaveTimer = null;
+  let volcAsrSaveRequest = 0;
   const agentNameRe = /^[一-龥A-Za-z0-9 _-]+$/;
   const CUSTOM_MODEL_VALUE = "__custom_model__";
 
@@ -2906,7 +2909,6 @@ function initTTSSettings() {
         provider: "volcengine",
         label: "火山豆包 ASR",
         fieldId: "voice-volc-apikey",
-        defaults: { "voice-volc-resourceid": "volc.bigasr.sauc.duration" },
       };
     }
     return null;
@@ -3075,6 +3077,47 @@ function initTTSSettings() {
     });
   }
 
+  function setVolcAsrKeyVisible(visible) {
+    volcAsrKeyVisible = Boolean(visible);
+    if (volcAsrKeyInput) volcAsrKeyInput.type = volcAsrKeyVisible ? "text" : "password";
+    if (volcAsrKeyToggle) {
+      volcAsrKeyToggle.setAttribute("aria-label", volcAsrKeyVisible ? "隐藏 API Key" : "显示 API Key");
+      volcAsrKeyToggle.title = volcAsrKeyVisible ? "隐藏 API Key" : "显示 API Key";
+    }
+  }
+
+  async function saveVolcAsrKeyAutomatically() {
+    if (!volcAsrKeyInput) return;
+    const apiKey = volcAsrKeyInput.value.trim();
+    const request = ++volcAsrSaveRequest;
+    try {
+      const resp = await fetch("http://127.0.0.1:3721/settings/voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voiceProvider: "volcengine", volcAsrApiKey: apiKey }),
+      });
+      if (!resp.ok) throw new Error("保存失败");
+      if (request !== volcAsrSaveRequest) return;
+      volcAsrKeyInput.value = apiKey;
+      localStorage.setItem(VOICE_PROVIDER_KEY, "volcengine");
+      showFeedback(voiceFeedback, apiKey ? "已自动保存" : "已清除");
+    } catch {
+      if (request === volcAsrSaveRequest) showFeedback(voiceFeedback, "自动保存失败", true);
+    }
+  }
+
+  volcAsrKeyToggle?.addEventListener("click", () => {
+    setVolcAsrKeyVisible(!volcAsrKeyVisible);
+  });
+
+  volcAsrKeyInput?.addEventListener("input", () => {
+    if (volcAsrSaveTimer) clearTimeout(volcAsrSaveTimer);
+    volcAsrSaveTimer = setTimeout(() => {
+      volcAsrSaveTimer = null;
+      saveVolcAsrKeyAutomatically();
+    }, 500);
+  });
+
   voiceRefreshMicsBtn?.addEventListener("click", () => {
     loadMicrophoneDevices({ requestPermission: true });
   });
@@ -3108,6 +3151,8 @@ function initTTSSettings() {
         savedProvider = data.voice.voiceProvider;
         localStorage.setItem(VOICE_PROVIDER_KEY, savedProvider);
       }
+      const savedVolcAsrKey = data?.voice?.volcAsrApiKey?.value;
+      if (volcAsrKeyInput) volcAsrKeyInput.value = typeof savedVolcAsrKey === "string" ? savedVolcAsrKey : "";
     } catch {}
     if (voiceProviderSelect) voiceProviderSelect.value = savedProvider;
     applyVoiceProviderUI(savedProvider);
@@ -3156,12 +3201,6 @@ function initTTSSettings() {
       if (xunfeiApikey) body.xunfeiApiKey = xunfeiApikey;
       const volcApiKey = document.getElementById("voice-volc-apikey")?.value?.trim();
       if (volcApiKey) body.volcAsrApiKey = volcApiKey;
-      const volcResourceId = document.getElementById("voice-volc-resourceid")?.value?.trim();
-      if (volcResourceId) body.volcAsrResourceId = volcResourceId;
-      const volcAppKey = document.getElementById("voice-volc-appkey")?.value?.trim();
-      if (volcAppKey) body.volcAsrAppKey = volcAppKey;
-      const volcAccessKey = document.getElementById("voice-volc-accesskey")?.value?.trim();
-      if (volcAccessKey) body.volcAsrAccessKey = volcAccessKey;
 
       if (Object.keys(body).length > 0) {
         try {
@@ -3178,9 +3217,6 @@ function initTTSSettings() {
             "voice-tencent-sid",
             "voice-tencent-skey",
             "voice-xunfei-apikey",
-            "voice-volc-apikey",
-            "voice-volc-appkey",
-            "voice-volc-accesskey",
           ].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";

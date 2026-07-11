@@ -121,10 +121,19 @@ ${systemPrompt}`
 }
 
 function buildRecentOutboundSnapshot(conversationWindow = []) {
-  const sent = (Array.isArray(conversationWindow) ? conversationWindow : [])
+  const rows = (Array.isArray(conversationWindow) ? conversationWindow : [])
+    .filter(row => String(row?.content || '').trim())
+  const sent = rows
     .filter(row => row?.role === 'jarvis' && String(row.content || '').trim())
     .slice(-3)
   if (sent.length === 0) return ''
+
+  const lastOutboundIndex = rows.map(row => row?.role).lastIndexOf('jarvis')
+  const isHumanMessage = row => row?.role !== 'jarvis' && String(row?.from_id || row?.fromId || '').toUpperCase() !== 'SYSTEM'
+  const lastHumanIndex = rows.reduce((last, row, index) => isHumanMessage(row) ? index : last, -1)
+  const unansweredOutboundCount = lastOutboundIndex > lastHumanIndex
+    ? rows.slice(lastHumanIndex + 1).filter(row => row?.role === 'jarvis').length
+    : 0
 
   const lines = sent.map(row => {
     const time = formatLocalClock(row.timestamp)
@@ -132,10 +141,31 @@ function buildRecentOutboundSnapshot(conversationWindow = []) {
     const content = String(row.content || '').replace(/\s+/g, ' ').trim().slice(0, 360)
     return `- ${time} -> ${target}: “${content}”`
   })
+  const boundary = unansweredOutboundCount > 0
+    ? [
+        `Conversation boundary: the last conversational move is yours; the user has not replied since ${unansweredOutboundCount === 1 ? 'that message' : `you sent ${unansweredOutboundCount} messages in a row`}.`,
+        'Treat this as a human pause. Do not send another heartbeat follow-up, greeting, reflection, or status repeat merely because time passed. Silence is the default unless there is genuinely new consequential evidence, such as a due reminder, a requested task result, a material change, or urgent risk.',
+      ]
+    : []
   return [
     'Recent verified outbound messages (these are things you have already said, not pending work):',
     ...lines,
     'Before sending during this heartbeat, compare current evidence with what the recipient already knows. A new message is useful only when new facts, progress, risk, or a new user message makes it useful; otherwise silence is the complete action.',
+    ...boundary,
+  ].join('\n')
+}
+
+function buildTickContinuityCheck({ conversationWindow = [], recentActions = [], actionLog = [], lastToolResult = null } = {}) {
+  const hasConversation = conversationWindow.some(row => String(row?.content || '').trim())
+  const hasActions = recentActions.length > 0 || actionLog.length > 0 || !!lastToolResult
+  if (!hasConversation && !hasActions) return ''
+
+  return [
+    'Heartbeat continuity check — do this privately before choosing any tool call or send_message:',
+    '1. Treat the recent conversation, Recent assistant actions, Recent tool/action log, previous tool result, and verified outbound snapshot as the freshest evidence. They outrank generic memories for deciding what has already happened in this ongoing situation.',
+    '2. Identify the exact next state you would create. If that state, result, message, or investigation is already present in the fresh evidence, do not repeat it.',
+    '3. Repeat an action only when there is a concrete reason in current evidence: a changed input, an explicit retry after a failure, a scheduled/due trigger, or a task step that genuinely still requires new work. Time passing by itself is not new evidence.',
+    '4. If no such delta exists, conclude silently. Silence after a completed or already-reported action is correct heartbeat behavior, not an unfinished response.',
   ].join('\n')
 }
 
@@ -248,6 +278,9 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
 
   const rows = Array.isArray(conversationWindow) ? conversationWindow : []
   const outboundSnapshot = isTick ? buildRecentOutboundSnapshot(rows) : ''
+  const continuityCheck = isTick
+    ? buildTickContinuityCheck({ conversationWindow: rows, recentActions, actionLog, lastToolResult })
+    : ''
 
   // P0-2：先扫一遍找出所有"过期未答悬念"
   const expiredSet = computeExpiredFollowupSet(rows, currentTopic)
@@ -265,7 +298,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
     batteryBlock,
     outboundSnapshot,
     conversationMetadata,
-    intentCheck,
+    intentCheck: [continuityCheck, intentCheck].filter(Boolean).join('\n\n'),
     role: isTick ? 'system' : 'user',
   }))
 

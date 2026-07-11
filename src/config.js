@@ -1425,6 +1425,11 @@ export function getVoiceConfig() {
         invalidFormat: !isValidAliyunAsrKey(stored[key]),
       }
     }
+    if (key === 'volcAsrApiKey' && stored[key]) {
+      // The desktop settings UI intentionally lets its owner review this value.
+      // Keep other voice secrets redacted from the API response.
+      result[key] = { configured: true, value: stored[key] }
+    }
   }
   return result
 }
@@ -1460,7 +1465,7 @@ export function setVoiceConfig(updates) {
 const TTS_CONFIG_KEYS = [
   'ttsProvider', 'ttsVoiceId',
   'minimaxKey',
-  'doubaoKey', 'doubaoAppId', 'doubaoAccessKey', 'doubaoResourceId', 'doubaoStyle', 'doubaoSpeechRate',
+  'doubaoKey', 'doubaoResourceId', 'doubaoSpeechRate',
   'openaiTtsKey', 'openaiTtsBaseURL',
   'elevenLabsKey',
   'volcanoAppId', 'volcanoToken',
@@ -1473,11 +1478,8 @@ export function getTTSConfig() {
     ttsProvider:     stored.ttsProvider  || 'doubao',
     ttsVoiceId:      stored.ttsVoiceId   || 'zh_female_xiaohe_uranus_bigtts',
     minimaxKey:      { configured: !!(stored.minimaxKey || process.env.MINIMAX_API_KEY || getMinimaxKey()) },
-    doubaoKey:       { configured: !!(stored.doubaoKey) },
-    doubaoAppId:     { configured: !!(stored.doubaoAppId), value: stored.doubaoAppId || '' },
-    doubaoAccessKey: { configured: !!(stored.doubaoAccessKey) },
+    doubaoKey:       { configured: !!(stored.doubaoKey), value: stored.doubaoKey || '' },
     doubaoResourceId: stored.doubaoResourceId || '',
-    doubaoStyle:     stored.doubaoStyle || '',
     doubaoSpeechRate: Number(stored.doubaoSpeechRate || 0) || 0,
     openaiTtsBaseURL: stored.openaiTtsBaseURL || '',
     openaiTtsKey:    { configured: !!(stored.openaiTtsKey) },
@@ -1495,10 +1497,7 @@ export function getTTSCredentials() {
     provider:       stored.ttsProvider  || 'doubao',
     voiceId:        stored.ttsVoiceId   || 'zh_female_xiaohe_uranus_bigtts',
     doubaoKey:      stored.doubaoKey    || process.env.DOUBAO_TTS_API_KEY || '',
-    doubaoAppId:    stored.doubaoAppId  || process.env.DOUBAO_TTS_APP_ID || '',
-    doubaoAccessKey: stored.doubaoAccessKey || process.env.DOUBAO_TTS_ACCESS_KEY || '',
     doubaoResourceId: stored.doubaoResourceId || process.env.DOUBAO_TTS_RESOURCE_ID || '',
-    doubaoStyle:    stored.doubaoStyle || process.env.DOUBAO_TTS_STYLE || '',
     doubaoSpeechRate: Number(stored.doubaoSpeechRate ?? process.env.DOUBAO_TTS_SPEECH_RATE ?? 0) || 0,
     minimaxKey:     process.env.MINIMAX_API_KEY || stored.minimaxKey || getMinimaxKey() || (config.provider === 'minimax' ? config.apiKey : '') || '',
     openaiKey:      stored.openaiTtsKey  || '',

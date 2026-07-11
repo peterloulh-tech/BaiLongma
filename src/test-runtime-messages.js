@@ -165,6 +165,24 @@ const tickHistoryMessages = buildLLMMessages({
 assertEqual(tickHistoryMessages[tickHistoryMessages.length - 1].role, 'assistant', 'tick with history can end on the assistant history row')
 assertEqual(tickHistoryMessages[tickHistoryMessages.length - 1].content, 'hi back', 'tick does not append a current user message after assistant history')
 
+const continuityMessages = buildLLMMessages({
+  systemPrompt: 'SYS',
+  conversationWindow: [{
+    role: 'jarvis',
+    to_id: 'ID:000001',
+    timestamp: '2026-05-25T10:01:00+08:00',
+    content: 'The report is already sent.',
+  }],
+  recentActions: [{ ts: '2026-05-25T10:01:00+08:00', summary: 'sent report to ID:000001' }],
+  actionLog: [{ timestamp: '2026-05-25T10:01:00+08:00', tool: 'send_message', summary: 'report delivered' }],
+  input: 'TICK 2026-05-25-10:03:00',
+  isTick: true,
+})
+const continuityContext = continuityMessages.find(message => String(message.content || '').includes('Heartbeat continuity check'))?.content || ''
+assert(continuityContext.includes('freshest evidence'), 'Tick prioritizes recent conversation and execution evidence')
+assert(continuityContext.includes('do not repeat it'), 'Tick continuity check blocks already-completed work')
+assert(continuityContext.includes('Time passing by itself is not new evidence'), 'Tick does not treat elapsed time as a retry trigger')
+
 const systemSignal = formatConversationMessage({
   role: 'user',
   from_id: 'SYSTEM',
