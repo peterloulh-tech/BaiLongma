@@ -624,6 +624,7 @@ function buildPostSendNudge(outboundMessages = [], tickState = null) {
     `You have already delivered this message to ${latest.targetId} at ${latest.sentAt}:`,
     `“${latest.content.slice(0, 500)}”`,
     tickState ? `This is still outer TICK #${tickState.number}; the send happened in tool-loop round ${latest.toolRound}.` : '',
+    'The successful tool result means the message was received and shown to the user. If the user has not replied, that is only a pause; do not reinterpret silence as a missed or failed delivery, and do not retry the message for that reason.',
     'Treat that delivery as a completed fact, not an unfinished task. Compare the current evidence with what the recipient already knows before considering another message.',
     'Default action: end the round silently. Only send again if new external evidence, task progress, risk, or a new user message makes another message useful to the recipient.',
   ].filter(Boolean).join('\n')

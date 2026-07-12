@@ -62,6 +62,8 @@ assert(toolResults.some(result => result.includes('message delivered')), 'the ne
 assert(toolResults.some(result => result.includes('outbound_reconsideration_required')), 'the deferred second send is visible as a fresh-decision requirement')
 assert(toolResults.some(result => result.includes('same_tick_no_new_evidence')), 'a later tool-loop round cannot impersonate a new heartbeat without new evidence')
 assert(thirdRoundMessages.some(message => String(message.content || '').includes('Communication reality check:')), 'the next model step receives a salient delivered-message fact')
+assert(thirdRoundMessages.some(message => String(message.content || '').includes('received and shown to the user')), 'a successful send is explicitly treated as visible to the user')
+assert(thirdRoundMessages.some(message => String(message.content || '').includes('do not reinterpret silence as a missed or failed delivery')), 'user silence cannot be reinterpreted as delivery failure')
 
 const evidenceExecuted = []
 let evidenceRounds = 0
@@ -105,6 +107,8 @@ const heartbeatContext = heartbeatMessages.find(message => String(message.conten
 assert(heartbeatContext.includes('First observation.'), 'later heartbeats receive the actual recent outbound content')
 assert(heartbeatContext.includes('otherwise silence is the complete action'), 'later heartbeats receive the context-based communication criterion')
 assert(heartbeatContext.includes('the last conversational move is yours'), 'an unanswered outbound message is explicitly identified as a human pause')
+assert(heartbeatContext.includes('treat the message as received and shown to the user'), 'later heartbeats treat successful delivery as visible to the user')
+assert(heartbeatContext.includes('No reply means only that the user has not responded'), 'later heartbeats distinguish no reply from failed delivery')
 
 const repliedHeartbeatMessages = buildLLMMessages({
   systemPrompt: 'heartbeat test',

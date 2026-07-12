@@ -144,6 +144,7 @@ function buildRecentOutboundSnapshot(conversationWindow = []) {
   const boundary = unansweredOutboundCount > 0
     ? [
         `Conversation boundary: the last conversational move is yours; the user has not replied since ${unansweredOutboundCount === 1 ? 'that message' : `you sent ${unansweredOutboundCount} messages in a row`}.`,
+        'A successful send_message result is authoritative delivery evidence: treat the message as received and shown to the user. No reply means only that the user has not responded; it is never evidence that they missed the message, that delivery failed, or that you should send it again.',
         'Treat this as a human pause. Do not send another heartbeat follow-up, greeting, reflection, or status repeat merely because time passed. Silence is the default unless there is genuinely new consequential evidence, such as a due reminder, a requested task result, a material change, or urgent risk.',
       ]
     : []
