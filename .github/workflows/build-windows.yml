@@ -1,0 +1,90 @@
+name: 构建白龙马 Windows x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      npm_config_msvs_version: "2022"
+      PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+
+    steps:
+      - name: 获取作者最新 refactor/codebase
+        uses: actions/checkout@v4
+        with:
+          repository: xiaoyuanda666-ship-it/BaiLongma
+          ref: refactor/codebase
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: 配置 Node.js 22 x64
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: "x64"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: 显示源码信息
+        shell: pwsh
+        run: |
+          Write-Host "当前分支：refactor/codebase"
+          Write-Host "当前提交：$(git rev-parse --short HEAD)"
+          Write-Host "源码版本：$(node -p "require('./package.json').version")"
+          Write-Host "Node版本：$(node -v)"
+          Write-Host "npm版本：$(npm -v)"
+          Write-Host "Node架构：$(node -p "process.arch")"
+
+      - name: 安装项目依赖
+        shell: pwsh
+        run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          npm config set fetch-timeout 600000
+          npm ci --foreground-scripts --no-audit --no-fund
+
+      - name: 构建 Windows x64 安装程序
+        shell: pwsh
+        run: |
+          npm run build:win -- --publish never
+
+      - name: 检查安装程序并生成SHA256
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "dist\Bailongma-Setup-*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "构建结束，但没有找到Bailongma安装程序"
+          }
+
+          $hash = Get-FileHash $installer.FullName -Algorithm SHA256
+
+          "File: $($installer.Name)" |
+            Out-File "dist\SHA256.txt" -Encoding utf8
+
+          "SHA256: $($hash.Hash)" |
+            Out-File "dist\SHA256.txt" -Append -Encoding utf8
+
+          Write-Host "安装程序：$($installer.FullName)"
+          Write-Host "SHA256：$($hash.Hash)"
+
+      - name: 上传Windows安装程序
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bailongma-Windows-x64
+          path: |
+            dist/Bailongma-Setup-*.exe
+            dist/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
