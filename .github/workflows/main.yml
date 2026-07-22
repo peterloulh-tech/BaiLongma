@@ -1,0 +1,93 @@
+name: 构建白龙马 macOS ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      npm_config_fetch_retries: "5"
+      npm_config_fetch_retry_mintimeout: "20000"
+      npm_config_fetch_retry_maxtimeout: "120000"
+      npm_config_fetch_timeout: "600000"
+
+    steps:
+      - name: 获取作者最新 refactor/codebase
+        uses: actions/checkout@v6
+        with:
+          repository: xiaoyuanda666-ship-it/BaiLongma
+          ref: refactor/codebase
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: 配置 Node.js 22 ARM64
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          architecture: "arm64"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: 显示构建环境
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          NODE_ARCH="$(node -p "process.arch")"
+          echo "当前提交：$(git rev-parse --short HEAD)"
+          echo "源码版本：$VERSION"
+          echo "Node版本：$(node -v)"
+          echo "Node架构：$NODE_ARCH"
+          echo "系统架构：$(uname -m)"
+          sw_vers
+
+      - name: 安装项目依赖
+        shell: bash
+        run: |
+          npm ci --foreground-scripts --no-audit --no-fund
+
+      - name: 构建 macOS ARM64 DMG
+        shell: bash
+        run: |
+          npm run build:mac:arm64
+
+      - name: 检查并整理构建结果
+        shell: bash
+        run: |
+          DMG_PATH="$(find dist -type f -name 'Bailongma-*-mac-arm64.dmg' -print -quit)"
+
+          if [ -z "$DMG_PATH" ] || [ ! -f "$DMG_PATH" ]; then
+            echo "构建完成，但没有找到 ARM64 DMG"
+            find dist -maxdepth 3 -print
+            exit 1
+          fi
+
+          APP_PATH="$(find dist -type d -name 'Bailongma.app' -print -quit)"
+          VERSION="$(node -p "require('./package.json').version")"
+
+          if [ -n "$APP_PATH" ] && [ -d "$APP_PATH" ]; then
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$APP_PATH" \
+              "dist/Bailongma-${VERSION}-mac-arm64-app.zip"
+          fi
+
+          shasum -a 256 "$DMG_PATH" > dist/SHA256.txt
+          echo "DMG文件：$DMG_PATH"
+          cat dist/SHA256.txt
+
+      - name: 上传 macOS ARM64 安装文件
+        uses: actions/upload-artifact@v6
+        with:
+          name: Bailongma-macOS-ARM64
+          path: |
+            dist/Bailongma-*-mac-arm64.dmg
+            dist/Bailongma-*-mac-arm64-app.zip
+            dist/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
