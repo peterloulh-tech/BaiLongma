@@ -1,3 +1,34 @@
+      - name: 禁止构建时自动发布到作者仓库
+        shell: bash
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require('fs');
+
+          const file = 'scripts/build-mac.mjs';
+          let content = fs.readFileSync(file, 'utf8');
+
+          const oldCommand =
+            "run('node', ['./node_modules/electron-builder/cli.js', '--mac', 'dmg', `--${arch}`]);";
+
+          const newCommand =
+            "run('node', ['./node_modules/electron-builder/cli.js', '--mac', 'dmg', `--${arch}`, '--publish', 'never']);";
+
+          if (!content.includes(oldCommand)) {
+            throw new Error(
+              '没有找到electron-builder构建命令，作者可能又修改了build-mac.mjs'
+            );
+          }
+
+          content = content.replace(oldCommand, newCommand);
+          fs.writeFileSync(file, content);
+
+          console.log('已添加 --publish never，本次只构建DMG，不发布Release。');
+          NODE
+
+      - name: 构建 macOS ARM64 安装文件
+        run: npm run build:mac:arm64
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 name: 构建白龙马 macOS ARM64
 
 on:
